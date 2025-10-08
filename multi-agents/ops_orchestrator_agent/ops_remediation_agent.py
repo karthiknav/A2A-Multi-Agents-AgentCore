@@ -18,114 +18,29 @@ import logging
 import base64
 import asyncio
 import argparse
-from datetime import datetime
+import uvicorn
+import datetime
 from dotenv import load_dotenv
-from typing import Dict, Any, Optional
-# To correlate traces across multiple agent runs, 
-# we will associate a session ID with our telemetry data using the 
+from typing import Dict, Any, Optional, AsyncIterator
+from starlette.responses import JSONResponse
+# To correlate traces across multiple agent runs,
+# we will associate a session ID with our telemetry data using the
 # Open Telemetry baggage
 from opentelemetry import context, baggage
 from botocore.exceptions import ClientError
 
-# Load environment variables first
+# these are imports from the A2A library to instantiate the this agent
+# as an A2A server
+from a2a.server.apps import A2AStarletteApplication
+from a2a.server.request_handlers import DefaultRequestHandler
+from a2a.server.agent_execution.agent_executor import AgentExecutor
+from a2a.server.agent_execution.context import RequestContext
+from a2a.server.events.event_queue import EventQueue
+from a2a.server.tasks import InMemoryTaskStore
+from a2a.types import AgentCapabilities, AgentCard, AgentSkill
+
+# Load environment variables first (fallback)
 load_dotenv()
-
-# AWS Secrets Manager client for retrieving API keys
-secrets_manager_client = boto3.client('secretsmanager')
-
-def _get_secret(secret_name: str, region_name: str = 'us-west-2') -> str:
-    """
-    Retrieve a secret from AWS Secrets Manager.
-    
-    Args:
-        secret_name: Name of the secret in AWS Secrets Manager
-        region_name: AWS region where the secret is stored
-        
-    Returns:
-        The secret value as a string
-        
-    Raises:
-        ValueError: If secret cannot be retrieved
-    """
-    try:
-        client = boto3.client('secretsmanager', region_name=region_name)
-        response = client.get_secret_value(SecretId=secret_name)
-        
-        # Handle both string and JSON secrets
-        secret_string = response['SecretString']
-        try:
-            # Try to parse as JSON first
-            secret_data = json.loads(secret_string)
-            # If it's a JSON object, look for common key patterns
-            if isinstance(secret_data, dict):
-                # Try common key patterns for API keys
-                for key in ['api_key', 'key', 'value', 'OPENAI_API_KEY', 'TAVILY_API_KEY', 'JIRA_API_KEY']:
-                    if key in secret_data:
-                        return secret_data[key]
-                # If no standard key found, return the first value
-                return list(secret_data.values())[0] if secret_data else secret_string
-            return secret_string
-        except json.JSONDecodeError:
-            # It's a plain string secret
-            return secret_string
-            
-    except Exception as e:
-        raise ValueError(f"Failed to retrieve secret '{secret_name}': {str(e)}")
-
-def _get_api_key(key_name: str, secret_name: Optional[str] = None) -> str:
-    """
-    Get API key from Secrets Manager or environment variables as fallback.
-    
-    Args:
-        key_name: Environment variable name (e.g., 'OPENAI_API_KEY')
-        secret_name: Optional AWS Secrets Manager secret name
-        
-    Returns:
-        The API key value
-        
-    Raises:
-        ValueError: If key cannot be found in either location
-    """
-    # First try Secrets Manager if secret name provided
-    if secret_name:
-        try:
-            return _get_secret(secret_name)
-        except ValueError as e:
-            print(f"Warning: Failed to get {key_name} from Secrets Manager: {e}")
-            print(f"Falling back to environment variable...")
-    
-    # Fallback to environment variable
-    env_value = os.getenv(key_name)
-    if env_value:
-        return env_value
-        
-    raise ValueError(f"{key_name} not found in Secrets Manager or environment variables")
-
-# Get API keys from Secrets Manager with environment variable fallback
-try:
-    OPENAI_API_KEY = _get_api_key('OPENAI_API_KEY', 'prod/openai/api-key')
-    # Set in environment for other parts of the code
-    os.environ['OPENAI_API_KEY'] = OPENAI_API_KEY
-    print(f"OpenAI API Key loaded from Secrets Manager: {'***' + OPENAI_API_KEY[-4:] if OPENAI_API_KEY else 'NOT FOUND'}")
-except ValueError as e:
-    print(f"Error loading OpenAI API key: {e}")
-    raise
-
-try:
-    TAVILY_API_KEY = _get_api_key('TAVILY_API_KEY', 'prod/tavily/api-key')
-    os.environ['TAVILY_API_KEY'] = TAVILY_API_KEY
-    print(f"Tavily API Key loaded from Secrets Manager: {'***' + TAVILY_API_KEY[-4:] if TAVILY_API_KEY else 'NOT FOUND'}")
-except ValueError as e:
-    print(f"Warning: Tavily API key not available: {e}")
-    TAVILY_API_KEY = None
-
-try:
-    JIRA_API_KEY = _get_api_key('JIRA_API_KEY', 'prod/jira/api-key')
-    os.environ['JIRA_API_KEY'] = JIRA_API_KEY
-    print(f"JIRA API Key loaded from Secrets Manager: {'***' + JIRA_API_KEY[-4:] if JIRA_API_KEY else 'NOT FOUND'}")
-except ValueError as e:
-    print(f"Warning: JIRA API key not available: {e}")
-    JIRA_API_KEY = None
 
 # This is a parse argument function which will take in arguments for example the session id 
 # in this case. A session is a complete interaction consisting of traces and spans within a 
@@ -140,7 +55,7 @@ def parse_arguments():
                             help="Run an interactive CLI chat instead of the HTTP server")
         args = parser.parse_args()
         if not args.session_id:
-            args.session_id = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
+            args.session_id = f"{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:8]}"
             print(f"Session ID not provided, generating a new one: {args.session_id}")
         return args
     except Exception as e:
@@ -220,9 +135,34 @@ else:
     logging.basicConfig(format='[%(asctime)s] p%(process)s {%(filename)s:%(lineno)d} %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Load the config file. 
+# Load the config file.
 config_data = load_config('config.yaml')
 logger.info(f"Configuration loaded successfully")
+
+# Load API keys from SSM Parameter Store
+print("\n" + "="*80)
+print("Loading API Keys from AWS Systems Manager Parameter Store")
+print("="*80)
+api_keys = load_api_keys_from_ssm(config_data)
+
+# Set global variables for API keys
+TAVILY_API_KEY = api_keys.get('TAVILY_API_KEY')
+OPENAI_API_KEY = api_keys.get('OPENAI_API_KEY')
+JIRA_API_KEY = api_keys.get('JIRA_API_KEY')
+
+# Set environment variables for compatibility with libraries that read from os.environ
+if TAVILY_API_KEY:
+    os.environ['TAVILY_API_KEY'] = TAVILY_API_KEY
+if OPENAI_API_KEY:
+    os.environ['OPENAI_API_KEY'] = OPENAI_API_KEY
+if JIRA_API_KEY:
+    os.environ['JIRA_API_KEY'] = JIRA_API_KEY
+
+print("\nAPI Keys Status:")
+print(f"TAVILY_API_KEY: {'✅ Loaded' if TAVILY_API_KEY else '❌ Not Found'}")
+print(f"OPENAI_API_KEY: {'✅ Loaded' if OPENAI_API_KEY else '❌ Not Found'}")
+print(f"JIRA_API_KEY: {'✅ Loaded' if JIRA_API_KEY else '❌ Not Found'}")
+print("="*80 + "\n")
 from typing import Dict, List
 
 # Initialize observability for this agent
@@ -278,118 +218,99 @@ except Exception as e:
     pass
 
 # ────────────────────────────────────────────────────────────────────────────────────
-# AGENTCORE MEMORY PRIMITIVE INITIALIZATION
+# AGENTCORE MEMORY INITIALIZATION
 # ────────────────────────────────────────────────────────────────────────────────────
 
-# first, initialize the memory client
-openai_mem_client = MemoryClient(region_name=REGION_NAME)
-print(f"Initialized the OpenAI memory client using the bedrock AgentCore memory primitive: {openai_mem_client}")
+# Initialize the memory client
+client = MemoryClient(region_name=REGION_NAME)
 
-# Next, we will have to configure a couple of common memories for our agent. These are namely
-# the user preferences, semantic memory, summarize memory and also incident response
-# triaging memory for the lead agent. We will configure memory for the lead memory to be used
-# and stored in bedrock agentcore
+# Read the custom extraction prompt
 def read_prompt_file(filepath: str) -> str:
     with open(filepath, 'r') as f:
         return f.read()
 
-# Usage
-CUSTOM_EXTRACTION_PROMPT_LEAD_AGENT = read_prompt_file(OPS_ORCHESTRATOR_CUSTOM_EXTRACTION_PROMPT_FPATH)
-print(f"Going to be using the customer extraction prompt for user preferences: {CUSTOM_EXTRACTION_PROMPT_LEAD_AGENT}")
+CUSTOM_EXTRACTION_PROMPT = read_prompt_file(OPS_ORCHESTRATOR_CUSTOM_EXTRACTION_PROMPT_FPATH)
+print(f"Going to use a custom extraction prompt: {CUSTOM_EXTRACTION_PROMPT}")
 
-# this is the flag to check if the existing memory needs to be used or not
-# if there is a memory that is already created and existing, you can flag this in the config file as true
-create_memories: bool = config_data['agent_information']['ops_orchestrator_agent_model_info'].get('use_existing_memory')
-existing_memory_id: bool = config_data['agent_information']['ops_orchestrator_agent_model_info'].get('existing_memory_id')
-# set the memory id and memory to none for now
+# Check if we should use existing memory from config
+use_existing_memory = config_data['agent_information']['ops_orchestrator_agent_model_info'].get('use_existing_memory', False)
+existing_memory_id = config_data['agent_information']['ops_orchestrator_agent_model_info'].get('memory_credentials', {}).get('id')
+
+# Set the memory and the memory id for initialization
 memory_id = None
 memory = None
-local_tools_config = config_data.get('local_tools', {})
 
-# if the use existing memory or the existing memory id is provided, then use it
-# in the agent configuration
-if create_memories:
-    print(f"Going to be using the existing memory from the configuration file with id: {existing_memory_id}")
-    memory = {'id': existing_memory_id}
+if use_existing_memory and existing_memory_id:
+    print(f"Using existing memory from config with ID: {existing_memory_id}")
+    memory = {"id": existing_memory_id}
     memory_id = existing_memory_id
-# if these are not provided then we will create a new memory that we will be able to 
-# use with our openAI agents
-lead_agent_strategy = [
-    {
-        "userPreferenceMemoryStrategy": {
-            "name": "UserPreference",
-            "namespaces": ["/users/{actorId}/preferences/"]
-        }
-    },
-    {
-        "semanticMemoryStrategy": {
-            "name": "SemanticMemory",
-            "namespaces": ["/knowledge/{actorId}/semantics/"]
-        }
-    },
-    {
-        "summaryMemoryStrategy": {
-            "name": "SessionSummarizer",
-            "namespaces": ["/summaries/{actorId}/{sessionId}/"]
-        }
-    },
-    {
-        "customMemoryStrategy": {
-            "name": "IssueTriagingMemStrategy",
-            "namespaces": ["/technical-issues/{actorId}"],
-            "configuration": {
-                "semanticOverride": {
-                    "extraction": {
-                        "modelId": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-                        "appendToPrompt": CUSTOM_EXTRACTION_PROMPT_LEAD_AGENT
+else:
+    # Create new memory if none exists
+    if not memory:
+        print("Creating new memory...")
+        # Define memory strategies for ops orchestrator agent
+        strategies = [
+            {
+                "userPreferenceMemoryStrategy": {
+                    "name": "UserPreference",
+                    "namespaces": ["/users/{actorId}"]
+                }
+            },
+            {
+                "semanticMemoryStrategy": {
+                    "name": "SemanticMemory",
+                    "namespaces": ["/knowledge/{actorId}"]
+                }
+            },
+            {
+                "summaryMemoryStrategy": {
+                    "name": "SessionSummarizer",
+                    "namespaces": ["/summaries/{actorId}/{sessionId}"]
+                }
+            },
+            {
+                "customMemoryStrategy": {
+                    "name": "OpsIssueTracker",
+                    "namespaces": ["/technical-issues/{actorId}"],
+                    "configuration": {
+                        "semanticOverride": {
+                            "extraction": {
+                                "modelId": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+                                "appendToPrompt": CUSTOM_EXTRACTION_PROMPT
+                            }
+                        }
                     }
                 }
             }
-        }
-    }
-]
-agent_cfg = config_data['agent_information']['ops_orchestrator_agent_model_info']
-memory_cfg = agent_cfg.get('memories')
-print(f"Found relevant memory configurations: {memory_cfg}")
+        ]
 
-# Storage for memory details
-memories_data: Dict[str, Dict[str, Any]] = {}
-created_memories: Dict[str, str] = {}
-
-# Helper: mapping agent names to their strategies & descriptions
-strategy_map = {
-    'lead_agent': (lead_agent_strategy, "Memory for lead issue triaging OpenAI agent with custom issue tracking"),
-}
-
-for agent_name, cfg in memory_cfg.items():
-    """
-    For each of the strategy we will create the memory and wait
-    """
-    use_existing = cfg.get('use_existing', False)
-    existing_id = cfg.get('memory_id')
-
-    if use_existing and existing_id:
-        # Reuse existing memory
-        print(f"🔄 Reusing memory for {agent_name}: {existing_id}")
-        memories_data[agent_name] = {'id': existing_id}
-    else:
-        # Create new memory
-        if agent_name not in strategy_map:
-            raise ValueError(f"Unknown agent: {agent_name}")
-
-        strategies, description = strategy_map[agent_name]
-        print(f"✨ Creating memory for {agent_name}...")
-        mem = openai_mem_client.create_memory_and_wait(
-            name=f"{agent_name}_{int(time.time())}",
-            memory_execution_role_arn=EXECUTION_ROLE_ARN,
-            strategies=strategies,
-            description=description,
-            event_expiry_days=90
-        )
-        mem_id = mem.get("id")
-        print(f"✅ Created memory for {agent_name}: {mem_id}")
-        memories_data[agent_name] = {'id': mem_id}
-        created_memories[agent_name] = mem_id
+        try:
+            logger.info(f"Going to use the following memory execution role: {config_data['agent_information']['ops_orchestrator_agent_model_info'].get('memory_execution_role')}")
+            memory = client.create_memory_and_wait(
+                name=f"{OPS_ORCHESTRATOR_GATEWAY_NAME}_memory_{int(time.time())}",
+                memory_execution_role_arn=config_data['agent_information']['ops_orchestrator_agent_model_info'].get('memory_execution_role'),
+                strategies=strategies,
+                description="Memory for ops orchestrator agent with custom issue tracking",
+                event_expiry_days=7,  # short term conversation expires after 7 days
+                max_wait=300,
+                poll_interval=10
+            )
+            # Create and get the memory id
+            memory_id = memory.get("id")
+            logger.info(f"✅ Created memory: {memory_id}")
+        except Exception as e:
+            logger.error(f"❌ ERROR creating memory: {e}")
+            import traceback
+            traceback.print_exc()
+            # Cleanup on error - delete the memory if it was partially created
+            if memory_id:
+                try:
+                    client.delete_memory_and_wait(memoryId=memory_id, max_wait=300)
+                    logger.info(f"Cleaned up memory: {memory_id}")
+                except Exception as cleanup_error:
+                    logger.error(f"Failed to clean up memory: {cleanup_error}")
+            raise
+logger.info(f"Using memory with ID: {memory_id}")
 
 # Continue with the rest of your agent initialization...
 print("🚀 Continuing with ops orchestrator multi-agent setup...")
@@ -413,9 +334,8 @@ import os, asyncio, datetime
 import httpx
 from tavily import TavilyClient
 
-# TAVILY_API_KEY already loaded from Secrets Manager above
-# Keep this line for compatibility but use the global variable
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY") or TAVILY_API_KEY
+# TAVILY_API_KEY already loaded from SSM Parameter Store above
+# Use the global variable set earlier
 
 @function_tool
 async def web_search_impl(query: str, top_k: int = 5, recency_days: int | None = None):
@@ -469,38 +389,33 @@ def list_local_tools() -> list:
         }
     ]
 
-def _get_memory_tools(agent_type: str):
-    """Get memory tools for the specified agent type"""
-    memory_map = {
-        'lead_agent': memories_data.get('lead_agent', {}).get('id'),
-    }
-    
-    memory_id = memory_map.get(agent_type)
+def _get_memory_tools():
+    """Get memory tools using the initialized memory_id"""
     if memory_id:
         return create_memory_tools(
             memory_id,
-            openai_mem_client,
-            actor_id='default_actor',
+            client,
+            actor_id=config_data['agent_information']['ops_orchestrator_agent_model_info'].get('memory_allocation', {}).get('actor_id', 'default_actor'),
             session_id='default_session'
         )
     return []
     
 async def create_lead_orchestrator_agent(memory_tools: list):
     """Create lead orchestrator agent with local tools only"""
-    
+
     # Disable OpenAI tracing to prevent span_data.result errors
     os.environ["OPENAI_ENABLE_TRACING"] = "false"
-    
-    # Use the memory tools passed as parameter
+
+    # Use the memory tools passed as parameter, or get them if not provided
     if not memory_tools:
-        memory_tools = _get_memory_tools('lead_agent')
+        memory_tools = _get_memory_tools()
     print(f"Going to add memory tools: {memory_tools}")
-    
+
     # Add only local tools - no gateway dependencies
     agent_tools = [web_search_impl, *memory_tools]
-    
-    print(f"✅ Local tools initialized: web search, file search, and {len(memory_tools)} memory tools")
-    
+
+    print(f"✅ Local tools initialized: web search and {len(memory_tools)} memory tools")
+
     # Create the orchestrator agent with local tools only
     orchestrator = Agent(
         name="Ops_Orchestrator",
@@ -508,7 +423,7 @@ async def create_lead_orchestrator_agent(memory_tools: list):
         model=config_data['agent_information']['ops_orchestrator_agent_model_info'].get('model_id'),
         tools=agent_tools
     )
-    print(f"✅ Orchestrator Agent created with local tools only: {len(agent_tools)} total tools")
+    print(f"✅ Orchestrator Agent created with local tools: {len(agent_tools)} total tools")
     return orchestrator
 
 # ────────────────────────────────────────────────────────────────────────────────────
@@ -529,35 +444,203 @@ async def get_lead_orchestrator():
 
 async def _call_agent(agent, prompt: str):
     """
-    Call agent using the proper OpenAI Agents SDK Runner.
+    Call agent using the proper OpenAI Agents SDK Runner with detailed logging.
     """
     try:
+        print(f"📝 Calling agent with prompt: {prompt[:100]}...")
+        print(f"🤖 Agent type: {type(agent)}")
+        print(f"🤖 Agent name: {agent.name if hasattr(agent, 'name') else 'unknown'}")
+        
         # Use the proper OpenAI Agents SDK Runner
-        result = await Runner().run(agent, prompt)
-        return {"output": result.final_output}
+        runner = Runner()
+        print("🏃 Created Runner instance")
+        
+        result = await runner.run(agent, prompt)
+        print(f"✅ Agent execution completed")
+        print(f"📤 Result type: {type(result)}")
+        print(f"📤 Result attributes: {dir(result)}")
+        
+        # Try to get the output in different ways
+        output = None
+        if hasattr(result, 'final_output'):
+            output = result.final_output
+            print(f"📤 Got final_output: {output[:200] if output else 'None'}...")
+        elif hasattr(result, 'output'):
+            output = result.output
+            print(f"📤 Got output: {output[:200] if output else 'None'}...")
+        elif hasattr(result, 'text'):
+            output = result.text
+            print(f"📤 Got text: {output[:200] if output else 'None'}...")
+        else:
+            output = str(result)
+            print(f"📤 Converted result to string: {output[:200]}...")
+        
+        return {"output": output}
     except Exception as e:
+        logger.error(f"❌ Error running agent: {str(e)}", exc_info=True)
+        import traceback
+        traceback.print_exc()
         return {"output": f"Error running agent: {str(e)}"}
 
-app = BedrockAgentCoreApp()
-print(f"Created the Bedrock agent core app and we will be using an entrypoint from this app to invoke the agent from the runtime feature: {app}")
+# ──────────────────────────────────────────────────────────────────────────────
+# A2A AGENT EXECUTOR
+# ──────────────────────────────────────────────────────────────────────────────
 
-@app.entrypoint
-async def invoke(payload):
-    """Entrypoint for the lead ops orchestrator agent"""
-    user_message = payload.get("prompt")
-    print(f"🎯 Invoking operations agent with prompt: {user_message}")
+class OpsRemediationAgentExecutor(AgentExecutor):
+    """
+    Agent executor that wraps the OpenAI-based ops remediation agent
+    for A2A server compatibility
+    """
 
-    try:
-        orchestrator = await get_lead_orchestrator()
-        result = await _call_agent(orchestrator, user_message)
-        print("✅ Lead orchestrator execution completed")
-        return result
-    except Exception as e:
-        error_msg = f"❌ Error in lead orchestrator execution: {str(e)}"
-        print(error_msg)
-        return {"error": error_msg}
+    def __init__(self):
+        """Initialize the executor"""
+        self._agent = None
+        self._active_tasks = {}
+        logger.info("OpsRemediationAgentExecutor initialized")
 
+    async def _get_agent(self):
+        """Lazily initialize and return the agent"""
+        if self._agent is None:
+            logger.info("Creating lead orchestrator agent...")
+            self._agent = await get_lead_orchestrator()
+            logger.info("Lead orchestrator agent created successfully")
+        return self._agent
 
+    async def execute(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """
+        Execute the agent's logic for a given request context.
+        """
+        try:
+            task_id = context.task_id
+            logger.info(f"Executing task {task_id}")
+
+            # Extract the user message from context
+            user_message = ""
+
+            if context.message and context.message.parts:
+                for part in context.message.parts:
+                    # A2A protocol wraps TextPart in a Part container with 'root' attribute
+                    if hasattr(part, 'root') and hasattr(part.root, 'text'):
+                        user_message += part.root.text
+                    # Fallback: direct text attribute
+                    elif hasattr(part, 'text'):
+                        user_message += part.text
+                    # Fallback: dict access
+                    elif isinstance(part, dict) and 'text' in part:
+                        user_message += part['text']
+
+            logger.info(f"📝 User message extracted: '{user_message}'")
+
+            # Get the agent instance
+            agent = await self._get_agent()
+
+            # Mark task as active
+            self._active_tasks[task_id] = True
+
+            # Call the agent
+            logger.info("Calling agent with user message...")
+            result = await _call_agent(agent, user_message)
+
+            # Check if task was cancelled
+            if not self._active_tasks.get(task_id, False):
+                logger.info(f"Task {task_id} was cancelled")
+                return
+
+            # Publish completion event
+            from a2a.types import TaskStatusUpdateEvent, TaskState, TaskStatus, Message, TextPart, Role
+            import uuid
+
+            await event_queue.enqueue_event(
+                TaskStatusUpdateEvent(
+                    context_id=context.context_id,
+                    task_id=task_id,
+                    final=True,
+                    status=TaskStatus(
+                        state=TaskState.completed,
+                        message=Message(
+                            messageId=str(uuid.uuid4()),
+                            role=Role.user,  # Use Role.user
+                            parts=[TextPart(text=result.get("output", ""))]
+                        ),
+                        timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    )
+                )
+            )
+
+            logger.info(f"Task {task_id} completed successfully")
+
+        except Exception as e:
+            logger.error(f"Error executing task {task_id}: {e}", exc_info=True)
+
+            # Publish failure event
+            from a2a.types import TaskStatusUpdateEvent, TaskState, TaskStatus, Message, TextPart, Role
+            import uuid
+
+            await event_queue.enqueue_event(
+                TaskStatusUpdateEvent(
+                    context_id=context.context_id,
+                    task_id=task_id,
+                    final=True,
+                    status=TaskStatus(
+                        state=TaskState.failed,
+                        message=Message(
+                            messageId=str(uuid.uuid4()),
+                            role=Role.user,  # Use Role.user
+                            parts=[TextPart(text=str(e))]
+                        ),
+                        timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    )
+                )
+            )
+        finally:
+            # Clean up task from active tasks
+            self._active_tasks.pop(task_id, None)
+
+    async def cancel(
+        self,
+        context: RequestContext,
+        event_queue: EventQueue,
+    ) -> None:
+        """
+        Request the agent to cancel an ongoing task.
+        """
+        try:
+            task_id = context.task_id
+            logger.info(f"Cancelling task {task_id}")
+
+            # Mark task as cancelled
+            self._active_tasks[task_id] = False
+
+            # Publish cancellation event
+            from a2a.types import TaskStatusUpdateEvent, TaskState, TaskStatus, Message, TextPart, Role
+            import uuid
+
+            await event_queue.enqueue_event(
+                TaskStatusUpdateEvent(
+                    context_id=context.context_id,
+                    task_id=task_id,
+                    final=True,
+                    status=TaskStatus(
+                        state=TaskState.canceled,
+                        message=Message(
+                            messageId=str(uuid.uuid4()),
+                            role=Role.user,  # Use Role.user
+                            parts=[TextPart(text="Task cancelled by user")]
+                        ),
+                        timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    )
+                )
+            )
+
+            logger.info(f"Task {task_id} cancelled successfully")
+
+        except Exception as e:
+            logger.error(f"Error cancelling task {task_id}: {e}", exc_info=True)
+    
 # ──────────────────────────────────────────────────────────────────────────────
 # INTERACTIVE MODE & SINGLE-COMMAND MODE
 # (Use the same lead orchestrator in both)
@@ -568,86 +651,101 @@ import argparse
 import sys
 from typing import Optional
 
-async def interactive_mode():
-    """Run the lead orchestrator in interactive mode"""
-    print("🚀 Starting Lead Orchestrator Interactive Mode")
-    print("Type 'quit', 'exit', or 'q' to stop | Type 'help' for example commands")
-
-    try:
-        orchestrator = await get_lead_orchestrator()
-        print("✅ Lead Orchestrator initialized successfully!\n")
-
-        while True:
-            try:
-                # Use synchronous input - asyncio.to_thread can cause issues in some environments
-                user_input = input("🎯 Ops Orchestrator > ").strip()
-
-                if user_input.lower() in ['quit', 'exit', 'q']:
-                    print("👋 Goodbye!")
-                    break
-
-                if not user_input:
-                    continue
-
-                if user_input.lower() == 'help':
-                    _print_help()
-                    continue
-
-                print(f"\n🔄 Processing: {user_input}")
-                result = await _call_agent(orchestrator, user_input)
-                print(f"✅ Result:\n{result}\n")
-
-            except KeyboardInterrupt:
-                print("\n👋 Goodbye!")
-                return  # Use return instead of break to exit cleanly
-            except EOFError:
-                print("\n👋 Goodbye!")
-                return
-            except Exception as e:
-                print(f"❌ Error: {e}")
-
-    except KeyboardInterrupt:
-        print("\n👋 Goodbye!")
-        return
-    except Exception as e:
-        print(f"❌ Failed to initialize lead orchestrator: {e}")
-        return
-
-def _print_help():
-    """Print help information with example commands"""
-    print("\n📚 Example commands:")
-    print("🎫 JIRA: 'Create a JIRA ticket for high CPU usage investigation'")
-    print("🐙 GitHub: 'Create an issue in our ops repo about database performance'")
-    print("🔧 Combined: 'Production outage - create JIRA ticket and GitHub issue'")
-    print("📊 Info: 'Show me recent alerts and their resolution status'\n")
-
-async def run_single_command(command: str):
-    """Run a single command and exit using the lead orchestrator"""
-    try:
-        orchestrator = await get_lead_orchestrator()
-        result = await _call_agent(orchestrator, command)
-        print(f"✅ Result:\n{result}")
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        sys.exit(1)
-
 def _parse_arguments():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description="Ops Orchestrator Agent")
     parser.add_argument('-i', '--interactive', action='store_true', help='Run in interactive mode')
     parser.add_argument('-c', '--command', type=str, help='Execute a single command and exit')
     parser.add_argument('--server', action='store_true', help='Run as AgentCore server (default)')
+    parser.add_argument('--a2a', action='store_true', help='Run as A2A server on port 9000')
+    parser.add_argument('--port', type=int, default=9000, help='Port for A2A server (default: 9000)')
+    parser.add_argument('--host', type=str, default='127.0.0.1', help='Host for A2A server (default: 127.0.0.1)')
     return parser.parse_args()
+
+def run_a2a_server(host: str = '127.0.0.1', port: int = 9000):
+    """
+    Run the ops remediation agent as an A2A server
+
+    Args:
+        host: Host to bind the server to
+        port: Port to bind the server to
+    """
+    print(f"🚀 Starting Ops Remediation Agent A2A Server on {host}:{port}")
+
+    # Create agent card
+    agent_card = AgentCard(
+        name="Ops Remediation Agent",
+        description="Operations remediation agent that provides documentation and solutions for JIRA tickets by searching AWS documentation",
+        url=f"http://{host}:{port}",
+        version="1.0.0",
+        defaultInputModes=["text/plain"],
+        defaultOutputModes=["text/plain"],
+        capabilities=AgentCapabilities(
+            streaming=False,
+            pushNotifications=False
+        ),
+        skills=[
+            AgentSkill(
+                id="ops-remediation",
+                name="Operations Remediation",
+                description="Search AWS documentation and provide remediation strategies for operational issues",
+                tags=["operations", "remediation", "aws", "documentation"],
+                examples=[
+                    "Find documentation for fixing high CPU usage in EC2",
+                    "Search for solutions to RDS connection timeout issues",
+                    "Get remediation steps for Lambda function errors"
+                ]
+            ),
+            AgentSkill(
+                id="jira-documentation",
+                name="JIRA Documentation",
+                description="Provide documentation and updates for JIRA tickets",
+                tags=["jira", "documentation", "ticketing"],
+                examples=[
+                    "Document the fix for JIRA ticket OPS-123",
+                    "Provide status update for incident ticket"
+                ]
+            )
+        ]
+    )
+
+    # Create request handler with executor
+    request_handler = DefaultRequestHandler(
+        agent_executor=OpsRemediationAgentExecutor(),
+        task_store=InMemoryTaskStore()
+    )
+
+    # Create A2A server
+    server = A2AStarletteApplication(
+        agent_card=agent_card,
+        http_handler=request_handler
+    )
+
+    # Build the app and add health endpoint
+    app = server.build()
+
+    @app.route("/health", methods=["GET"])
+    async def health_check(request):
+        """Health check endpoint"""
+        return JSONResponse({
+            "status": "healthy",
+            "agent": "ops_remediation_agent",
+            "version": "1.0.0"
+        })
+
+    @app.route("/ping", methods=["GET"])
+    async def ping(request):
+        """Ping endpoint"""
+        return JSONResponse({"message": "pong"})
+
+    print(f"✅ A2A Server configured")
+    print(f"📍 Server URL: http://{host}:{port}")
+    print(f"🏥 Health check: http://{host}:{port}/health")
+    print(f"🏓 Ping: http://{host}:{port}/ping")
+
+    # Run the server
+    uvicorn.run(app, host=host, port=port)
 
 if __name__ == "__main__":
     args = _parse_arguments()
-
-    try:
-        if args.command:
-            asyncio.run(run_single_command(args.command))
-        else:
-            print("Running the application for the Bedrock agent core runtime.")
-            app.run()
-    except KeyboardInterrupt:
-        print("\n👋 Goodbye!")
-        sys.exit(0)
+    run_a2a_server(host=args.host, port=args.port)

@@ -6,3 +6,5 @@ requests
 boto3
 botocore
 plotly
+# This enables A2A 
+strands-agents[a2a]

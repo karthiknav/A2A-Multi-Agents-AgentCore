@@ -68,18 +68,6 @@ This will:
 - Package and deploy the Lambda function with monitoring tools
 - Set up necessary permissions for CloudWatch access
 
-### 1.4 Verify Lambda Deployment
-
-Test the Lambda function:
-
-```bash
-aws lambda invoke --function-name MonitoringAgentLambda \
-    --payload '{"method": "list_cloudwatch_dashboards", "arguments": {}}' \
-    response.json
-
-cat response.json
-```
-
 ## Step 2: Cognito Authentication Setup
 
 Set up Amazon Cognito for inbound authentication to the monitoring agent.
@@ -220,196 +208,185 @@ agent_information:
 pip install -r requirements.txt
 ```
 
-Or using uv:
+Or using `uv`:
 
 ```bash
 uv pip install -r requirements.txt
 ```
 
-## Running the Monitoring Agent
+## Running the Monitoring Agent as an A2A server
+Strands Agents supports the Agent-to-Agent (A2A) protocol, enabling seamless communication between AI agents across different platforms and implementations.
 
-### Option 1: Local Interactive Testing
+The Agent-to-Agent protocol is an open standard that defines how AI agents can discover, communicate, and collaborate with each other.
+
+### Option 1: Local Testing 
 
 Test the agent locally in interactive mode:
 
 ```bash
-python monitoring_agent.py --interactive
+python monitoring_agent.py
 ```
 
 This will:
-- Start the agent in interactive terminal mode
-- Connect to your deployed gateway and Lambda tools
-- Allow you to test monitoring queries directly
+- Create a monitoring strands agent with specific tools and capabilities
+- Wrap the monitoring agent to provide the A2A protocol compatibility
+- Dynamically construct the correct UTL based on the deployment context using the agentcore `runtime` URL.
+- A2A servers run on port `9000` by default in AgentCore runtime.
 
-Example interactions:
-```
-> List all CloudWatch dashboards
-> Show alarms for EC2 service
-> Get CloudWatch logs for application errors
-```
+#### Test the A2A server locally
 
-### Option 2: Deploy to AgentCore Runtime
-
-Deploy the agent to AWS AgentCore Runtime for production use. We will first configure it, 
-and while configuring it, hit `yes` on OAuth config, and enter the OAuth configurations
-from setting up the cognito step from before:
+Once you run the command above, the A2A server for the monitoring agent should be set up as follows:
 
 ```bash
-agentcore configure --entrypoint monitoring_agent.py 
-agentcore launch
+✅ A2A Monitoring Agent Ready!
+📍 Endpoint: http://0.0.0.0:9000
+🏥 Health check: http://0.0.0.0:9000/ping
 ```
 
-This will:
-- Configure the AgentCore Runtime
-- Build and deploy the agent using AWS CodeBuild
-- Create an ECR repository for the agent container
-- Deploy the agent to AWS infrastructure
-
-## Testing the Complete Setup
-
-### Test 1: Local Interactive Mode
+- Open another terminal and run the following command to send a request to the agent running as the A2A server:
 
 ```bash
-python monitoring_agent.py --interactive
+curl -X POST http://0.0.0.0:9000 \-H "Content-Type: application/json" \-d '{  "jsonrpc": "2.0",  "id": "req-001",  "method": "message/send",  "params": {  "message": {  "role": "user",  "parts": [  {  "kind": "text",  "text": "What are the cloudwatch logs for lambda in my AWS account?"  }  ],  "messageId": "d0673ab9-796d-4270-9435-451912020cd1"  }  } }' | jq .
 ```
 
-Try these example queries:
-- "List all CloudWatch dashboards"
-- "Show me alarms for the EC2 service"
-- "Get recent CloudWatch logs for errors"
+This will fetch all of the cloudwatch logs for `Lambda` in your AWS account.
 
-### Test 2: Runtime Invocation
+#### Test the agent card retrieval
 
-If deployed to runtime:
+- Run the following command to retrieve the agent card of the server:
 
 ```bash
-python invoke_with_token.py 'list all the log groups, look for alarms and create a ticket'
+curl http://localhost:9000/.well-known/agent-card.json | jq .
 ```
 
-**Output**:
+- Output:
 
 ```bash
 {
-  "response": "\"I've completed the tasks you requested. Here's a summary of the actions taken:\\n\\n1. Listed all log groups: I provided a summary of the 
-log groups in your AWS account, which are primarily related to Bedrock services, CodeBuild, and application signals.\\n\\n2. Looked for alarms: I found one 
-CloudWatch alarm for EC2 named \\\"NetworkPacketsInAlarm!\\\" which is currently in an INSUFFICIENT_DATA state.\\n\\n3. Created a ticket: I've created a Jira
-ticket (AIRT-39) summarizing the findings and suggesting action items. You can view the ticket at 
-https://madhurprashant7.atlassian.net/browse/AIRT-39.\\n\\nThe ticket includes a summary of the log groups, the alarm status, and suggested action items for 
-further investigation and improvement of your monitoring setup.\\n\\nIs there anything else you'd like me to do or any specific area you'd like me to focus 
-on regarding your AWS monitoring?\""
+  "capabilities": {
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text"
+  ],
+  "defaultOutputModes": [
+    "text"
+  ],
+  "description": "A monitoring agent that handles CloudWatch logs, metrics, dashboards, and AWS service monitoring",
+  "name": "monitoring_agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.3.0",
+  "skills": [
+    {
+      "description": "Analyze a specific CloudWatch log group for patterns and errors",
+      "id": "MonitoringOpsTarget___analyze_log_group",
+      "name": "MonitoringOpsTarget___analyze_log_group",
+      "tags": []
+    },
+    {
+      "description": "Create a simple issue in the Jira project backlog. Project and issue type are configured via environment variables.",
+      "id": "MonitoringOpsTarget___create_incident_jira_ticket",
+      "name": "MonitoringOpsTarget___create_incident_jira_ticket",
+      "tags": []
+    },
+    {
+      "description": "Fetch recent CloudWatch logs for a specific AWS service",
+      "id": "MonitoringOpsTarget___fetch_cloudwatch_logs_for_service",
+      "name": "MonitoringOpsTarget___fetch_cloudwatch_logs_for_service",
+      "tags": []
+    },
+    {
+      "description": "Get CloudWatch alarms for a specific service",
+      "id": "MonitoringOpsTarget___get_cloudwatch_alarms_for_service",
+      "name": "MonitoringOpsTarget___get_cloudwatch_alarms_for_service",
+      "tags": []
+    },
+    {
+      "description": "Get summary and configuration of a specific CloudWatch dashboard",
+      "id": "MonitoringOpsTarget___get_dashboard_summary",
+      "name": "MonitoringOpsTarget___get_dashboard_summary",
+      "tags": []
+    },
+    {
+      "description": "List all CloudWatch dashboards in the AWS account",
+      "id": "MonitoringOpsTarget___list_cloudwatch_dashboards",
+      "name": "MonitoringOpsTarget___list_cloudwatch_dashboards",
+      "tags": []
+    },
+    {
+      "description": "List all CloudWatch log groups in the account",
+      "id": "MonitoringOpsTarget___list_log_groups",
+      "name": "MonitoringOpsTarget___list_log_groups",
+      "tags": []
+    },
+    {
+      "description": "Setup and verify cross-account access for monitoring",
+      "id": "MonitoringOpsTarget___setup_cross_account_access",
+      "name": "MonitoringOpsTarget___setup_cross_account_access",
+      "tags": []
+    }
+  ],
+  "url": "http://127.0.0.1:9000/",
+  "version": "1.0.0"
 }
 ```
 
-![img](img/jira_ticket.png)
 
-### Test 3: Direct Lambda Testing
+### Option 2: Deploy your A2A server to Bedrock AgentCore Runtime
 
-Test the Lambda function directly:
+To deploy this A2A server on `AgentCore` runtime, follow the steps below:
 
-```bash
-aws lambda invoke --function-name MonitoringAgentLambda \
-    --payload '{"method": "get_cloudwatch_alarms_for_service", "arguments": {"service_name": "EC2"}}' \
-    response.json
-```
-
-## Configuration Files
-
-### Key Configuration Files
-
-- `config.yaml` - Main agent configuration
-- `tools/lambda_monitoring_tools.json` - Lambda tools configuration  
-- `idp_setup/cognito_config.json` - Cognito authentication details
-- `gateway_creation/setup_gateway.yaml` - Gateway configuration
-- `.bedrock_agentcore.yaml` - AgentCore runtime configuration
-
-### Environment Variables
-
-Optional environment variables for configuration:
+1. Make sure that the Amazon Bedrock `AgentCore` CLI is installed. The `uv` environment contains the required packages preinstalled. If not, then run the following command in the terminal below:
 
 ```bash
-export AWS_REGION=us-east-1
-export COGNITO_CLIENT_ID=your_client_id
-export COGNITO_CLIENT_SECRET=your_client_secret
-export GATEWAY_URL=your_gateway_url
+uv pip install bedrock-agentcore-starter-toolkit
 ```
 
-## Monitoring and Troubleshooting
+2. Create a new file called requirements.txt, add the following to it:
 
-### CloudWatch Logs
+```txt
+strands-agents[a2a]
+bedrock-agentcore
+strands-agents-tools
+```
 
-Monitor agent execution in CloudWatch Logs:
+3. Set up Cognito user pool for authentication: In this case, we will be re-using the OAuth information of the agent from the `multi-agents/monitoring_agent/idp_setup` step. To configure your own IdP information to enable OAuth with the agent running on Runtime, see [Set up Cognito user pool for authentication](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-mcp.html#set-up-cognito-user-pool-for-authentication) in the documentation. This provides the OAuth tokens required for secure access to your deployed server.
 
-- **Lambda Function Logs**: `/aws/lambda/MonitoringAgentLambda`
-- **AgentCore Runtime Logs**: `/aws/bedrock-agentcore/agent-runtime/your-agent-id`
+4. **Configure your A2A server for deployment**
 
-### Common Issues
-
-1. **Lambda Deployment Fails**
-   - Check IAM permissions for Lambda creation
-   - Verify the deployment script has execution permissions
-   - Review CloudWatch logs for detailed errors
-
-2. **Cognito Authentication Fails**
-   - Verify Cognito User Pool configuration
-   - Check client ID and discovery URL
-   - Ensure JWT tokens are valid
-
-3. **Gateway Creation Fails**
-   - Check AgentCore Gateway permissions
-   - Verify Lambda ARN is correct
-   - Review gateway IAM role permissions
-
-4. **Agent Runtime Issues**
-   - Check execution role permissions
-   - Verify ECR repository access
-   - Review CodeBuild project logs
-
-### Debug Commands
+After setting up authentication, create the deployment configuration:
 
 ```bash
-# Check AWS credentials
-aws sts get-caller-identity
-
-# Test Lambda function
-aws lambda get-function --function-name MonitoringAgentLambda
-
-# Check Cognito User Pool
-aws cognito-idp describe-user-pool --user-pool-id YOUR_POOL_ID
-
-# Get gateway information
-aws bedrock-agentcore-control get-gateway --gateway-id YOUR_GATEWAY_ID
+agentcore configure -e monitoring_agent.py --protocol A2A
 ```
 
-## Architecture Overview
+5. **Deploy to AWS**
 
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   User/Client   │ -> │  Monitoring      │ -> │ AgentCore       │
-│                 │    │  Agent           │    │ Gateway         │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
-                                                         │
-                                                         v
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│ Amazon Cognito  │ <- │     Lambda       │ <- │   AWS Services  │
-│ (Authentication)│    │   Functions      │    │ (CloudWatch,    │
-│                 │    │ (Monitoring Tools│    │  Logs, etc.)    │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
+Deploy your agent to `AgentCore` runtime:
+
+```bash
+agentcore launch
 ```
 
-## Next Steps
+6. **Fetch the agent card using OAuth 2.0**
 
-After successful setup:
+Run the following script that will generate the access token to invoke the `agent card` URL to fetch the agent card available via AgentCore runtime:
 
-1. **Customize Tools**: Add more monitoring tools to the Lambda function
-2. **Enhanced Authentication**: Configure additional Cognito features
-3. **Scaling**: Set up auto-scaling for high-volume monitoring
-4. **Integrations**: Add integrations with other AWS services
-5. **Monitoring**: Set up CloudWatch alarms for the agent itself
+```bash
+cd multi-agents
+python retrieve_agent_card.py
+```
 
-## Support
+This script will prompt you for the following information:
 
-For issues or questions:
-1. Check CloudWatch Logs for detailed error messages
-2. Review the troubleshooting section above
-3. Verify all configuration files are correctly updated
-4. Test each component individually before full integration
+1. Agent ARN (use the agent arn from the `.bedrock_agentcore.yaml`) file.
+2. OAuth 2.0 information (Discovery URL, allowed `client IDs`)
+
+Once done, this script will generate the bearer token and invoke the agent running on `AgentCore` Runtime as an A2A server and invoke the `agent card` URL to get the agent card (same agent card provided above).
+
+Now you should have an agent running as an A2A server on `AgentCore` Runtime utilizing all AgentCore primitives for monitoring services via Amazon CloudWatch.
+
+### Next steps
+
+Repeat the next steps for the `ops_agent` and navigate to the `A2A` directory for bringing all agents together.
+

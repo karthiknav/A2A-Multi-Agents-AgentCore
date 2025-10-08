@@ -1,6 +1,6 @@
 general:
   name: "ops-orchestrator-agent"      
-  description: ""
+  description: "This agent has access web search functionalities and looks up remediation strategies if any errors are encountered via the monitoring agent"
 
 # This contains the model information for various agents
 # in our multi agentic system
@@ -11,8 +11,8 @@ agent_information:
     # This is the system prompt for the monitoring agent that will be used 
     # in agent creation and development
     ops_orchestrator_agent:
-  ops_orchestrator_agent_model_info: 
-    # Represents the model id that the agent will use within 
+  ops_orchestrator_agent_model_info:
+    # Represents the model id that the agent will use within
     # the strands agents SDK
     model_id: gpt-4o-2024-08-06
     # Represents the inference parameters that the foundation model
@@ -22,19 +22,17 @@ agent_information:
       # based on the inference parameters that are supported
       temperature: 0.1
       max_tokens: 2048
-    # There are memories for all of the agents that will be used in this sample
-    # there are three agents with different memory storage strategies and all will be used
-    memories:
-      lead_agent:
-        use_existing: true
-        memory_id: OpsAgent_mem_1753364538-TvqIKh3jxd
+    # MEMORY CONFIGURATION FOR THE OPS ORCHESTRATOR AGENT
+    # If your memory is already created, please provide the credentials here
+    use_existing_memory: yes
     memory_credentials:
       # fetch this from your AWS console
-      id: 
+      id: OpsOrchestratorAgentGW_memory_1759934140-0NjOTPBPZI
+    memory_execution_role: arn:aws:iam::218208277580:role/memrole
     memory_allocation:
       # An actor refers to an entity such as an end user or an agent that interacts with the
       # agent application. For example, in a coding use case, an actor is a developer asking
-      # questions to the assistant. Using the actor id helps the system know which user the 
+      # questions to the assistant. Using the actor id helps the system know which user the
       # memory belongs to, keeping each user's data separate and organized
       actor_id: actor_agent_openAI_madhur2039
       # The session is usually a single conversation that is the interaction period between
@@ -43,15 +41,27 @@ agent_information:
       # be created on the fly using the strategies that are used in the memory for the agent.
     # set this to false if the agent arn is provided from above
     launch_agentcore_runtime: true
-    # this is the runtime execution role for the agent that will be used 
+    # this is the runtime execution role for the agent that will be used
     runtime_exec_role: arn:aws:iam::218208277580:role/service-role/Amazon-Bedrock-IAM-Role-20240102T112809
-  
-# Authentication configuration for OIDC
+
+# SSM Parameter Store configuration for API keys
+ssm_parameters:
+  region: us-west-2
+  parameters:
+    tavily_api_key: /ops-orchestrator/tavily-api-key
+    openai_api_key: /ops-orchestrator/openai-api-key
+    jira_api_key: /ops-orchestrator/jira-api-key
+
 idp_setup:
-  user_pool_id: us-west-2_VveqvN6ar
-  discovery_url: https://cognito-idp.us-west-2.amazonaws.com/us-west-2_VveqvN6ar/.well-known/openid-configuration
-  client_secret: vkapqeb6629d0o2vqpen2k9ji9buha9vn4p8mkr7ao4h89bs81p
-  client_id: 27p4n7fn6t5fttt0hif3eehnmr
+  user_pool_id: 
+  domain: 
+  discovery_url: 
+  client_secret: 
+  client_id: 
+  resource_server_identifier: 
+  scopes:
+    - 
+    - 
 
 # this is information about the cloudwatch related tools that will be used
 # in the agent

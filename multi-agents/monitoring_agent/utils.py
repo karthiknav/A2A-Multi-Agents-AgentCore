@@ -509,6 +509,7 @@ def get_access_token(
     scope_string: str,
     region: Optional[str] = None,
     discovery_url: Optional[str] = None,
+    domain: Optional[str] = None,
     timeout: int = 15,
 ) -> Dict:
     """
@@ -521,6 +522,7 @@ def get_access_token(
             "monitoring-agentcore-gateway-id/gateway.read monitoring-agentcore-gateway-id/gateway.write"
         region: optional; if omitted, derived from user_pool_id (before the underscore)
         discovery_url: optional; if provided, takes precedence to fetch token_endpoint
+        domain: optional; Cognito domain prefix for token endpoint (required for client_credentials)
         timeout: request timeout (seconds)
 
     Returns:
@@ -529,7 +531,19 @@ def get_access_token(
     try:
         # 1) Determine token endpoint
         token_endpoint: str
-        if discovery_url:
+
+        # Determine region first as it's needed for domain-based URL
+        if region is None:
+            if "_" not in user_pool_id:
+                return {"error": f"Cannot derive region from user_pool_id '{user_pool_id}'"}
+            region = user_pool_id.split("_", 1)[0]
+
+        # For client_credentials grant, prefer domain-based token endpoint
+        if domain:
+            # Use domain-based endpoint: https://<domain>.auth.<region>.amazoncognito.com/oauth2/token
+            token_endpoint = f"https://{domain}.auth.{region}.amazoncognito.com/oauth2/token"
+            logger.debug(f"Using domain-based token endpoint: {token_endpoint}")
+        elif discovery_url:
             disc = requests.get(discovery_url, timeout=timeout)
             disc.raise_for_status()
             token_endpoint = disc.json().get("token_endpoint", "")
@@ -538,11 +552,7 @@ def get_access_token(
             token_endpoint = _normalize_cognito_token_endpoint(token_endpoint)
         else:
             # Build canonical user-pool endpoint: https://cognito-idp.<region>.amazonaws.com/<poolId>/oauth2/token
-            if region is None:
-                # Derive region from the pool id prefix (before the underscore)
-                if "_" not in user_pool_id:
-                    return {"error": f"Cannot derive region from user_pool_id '{user_pool_id}'"}
-                region = user_pool_id.split("_", 1)[0]
+            # Note: This may not work for client_credentials grant without a domain
             token_endpoint = f"https://cognito-idp.{region}.amazonaws.com/{user_pool_id}/oauth2/token"
 
         form = {

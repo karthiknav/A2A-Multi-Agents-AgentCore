@@ -1,93 +1,356 @@
-# Ops Orchestrator Agent
+# Ops Orchestrator Agent - Complete Setup Guide
 
-AI-powered operations agent that searches for best practices, creates JIRA tickets, and provides infrastructure remediation guidance.
+This operations orchestrator agent is built using AWS Bedrock AgentCore runtime for searching best practices and providing infrastructure remediation guidance. This guide provides step-by-step instructions for complete setup from secrets management to runtime deployment.
 
 ## Prerequisites
 
-- Python 3.11+
-- AWS CLI configured with appropriate permissions
-- AWS Secrets Manager access
-- Cognito IdP permissions
+- **AWS Account and Credentials**: Ensure AWS credentials are configured
+- **Python 3.11+**: Required for all components
+- **IAM Permissions**: Admin access or sufficient permissions for:
+  - Amazon Bedrock AgentCore
+  - AWS Secrets Manager
+  - Amazon Cognito
+  - IAM role creation
+- **API Keys**:
+  - OpenAI API key (required)
+  - Tavily API key (for web search)
+  - JIRA API key (optional, for ticket creation)
 
-## Quick Setup
+## Overview
 
-### 1. Environment Setup
+The setup process consists of 3 main steps:
+1. **Secrets Management** - Store API keys in AWS Secrets Manager
+2. **Cognito Authentication** - Set up authentication for the agent
+3. **Agent Runtime** - Deploy and test the ops orchestrator agent
+
+## Step 1: API Keys Management
+
+The ops orchestrator agent requires API keys for OpenAI, Tavily (web search), and optionally JIRA. You can store these keys in **AWS Systems Manager Parameter Store** (recommended) or use environment variables as a fallback.
+
+### Option A: Store API Keys in AWS Systems Manager Parameter Store (Recommended)
+
+Store your API keys securely in SSM Parameter Store using the AWS CLI:
+
 ```bash
-# Copy and fill environment variables
-cp .env.example .env
+# Store Tavily API Key
+aws ssm put-parameter \
+    --name "/ops-orchestrator/tavily-api-key" \
+    --value "your-tavily-key-here" \
+    --type "SecureString" \
+    --region us-west-2
 
-# Add your API keys to .env:
-# - OPENAI_API_KEY
-# - TAVILY_API_KEY  
-# - JIRA_API_KEY (optional)
+# Store OpenAI API Key
+aws ssm put-parameter \
+    --name "/ops-orchestrator/openai-api-key" \
+    --value "your-openai-key-here" \
+    --type "SecureString" \
+    --region us-west-2
+
+# Store JIRA API Key (optional)
+aws ssm put-parameter \
+    --name "/ops-orchestrator/jira-api-key" \
+    --value "your-jira-key-here" \
+    --type "SecureString" \
+    --region us-west-2
 ```
 
-### 2. Store Keys in Secrets Manager
+**Verify the parameters were created successfully:**
+
 ```bash
-# Dry run to see what will be created
-python setup_secrets.py --dry-run
+# List all ops-orchestrator parameters
+aws ssm get-parameters-by-path \
+    --path "/ops-orchestrator" \
+    --region us-west-2
 
-# Store API keys in AWS Secrets Manager
-python setup_secrets.py --setup --region us-west-2
-
-# Verify secrets are accessible
-python setup_secrets.py --verify
+# Get a specific parameter (without decryption for verification)
+aws ssm get-parameter \
+    --name "/ops-orchestrator/tavily-api-key" \
+    --region us-west-2
 ```
 
-### 3. Configure Cognito Authentication
-```bash
-# Setup Cognito User Pool
-python idp_setup/setup_cognito.py
+**IAM Permissions Required:**
+
+Ensure your IAM role/user has the following permissions:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "ssm:GetParameter",
+        "ssm:GetParameters",
+        "ssm:PutParameter"
+      ],
+      "Resource": "arn:aws:ssm:us-west-2:*:parameter/ops-orchestrator/*"
+    }
+  ]
+}
 ```
 
-After Cognito setup, update `config.yaml`:
+The agent will automatically load these keys from SSM Parameter Store using the configuration in `config.yaml`.
+
+### Option B: Use Environment Variables (Fallback)
+
+Alternatively, create a `.env` file in the ops_orchestrator_agent directory:
+
+```bash
+# OpenAI API Key (required)
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Tavily API Key (for web search)
+TAVILY_API_KEY=your_tavily_api_key_here
+
+# JIRA API Key (optional)
+JIRA_API_KEY=your_jira_api_key_here
+```
+
+The agent will automatically fall back to environment variables if SSM retrieval fails.
+
+## Step 2: Cognito Authentication Setup
+
+Set up Amazon Cognito for authentication to the ops orchestrator agent.
+
+### 2.1 Navigate to IdP Setup Directory
+
+```bash
+cd idp_setup
+```
+
+### 2.2 Run Cognito Setup
+
+Execute the Cognito setup script:
+
+```bash
+python setup_cognito.py
+```
+
+This will:
+- Create a Cognito User Pool
+- Set up a resource server with appropriate scopes
+- Create M2M (machine-to-machine) client credentials
+- Generate a test user for authentication
+- Save configuration to `cognito_config.json`
+
+### 2.3 Record Cognito Configuration
+
+The script will output important configuration details:
+
+```
+COGNITO SETUP COMPLETE
+====================================
+Pool ID: us-west-2_XXXXXXXXX
+Client ID: XXXXXXXXXXXXXXXXXXXXXXXXXX
+Discovery URL: https://cognito-idp.us-west-2.amazonaws.com/us-west-2_XXXXXXXXX/.well-known/openid-configuration
+Username: testuser
+Password: MyPassword123!
+M2M Client ID: XXXXXXXXXXXXXXXXXXXXXXXXXX
+M2M Client Secret: XXXXXXXXXX...
+====================================
+```
+
+Save these values - you'll need them for agent configuration.
+
+## Step 3: Agent Runtime Setup
+
+Deploy and test the `ops` orchestrator agent runtime.
+
+### 3.1 Update Agent Configuration
+
+Update the remaining sections in `config.yaml`:
+
 ```yaml
-idp_setup:
-  user_pool_id: # From cognito_config.json
-  discovery_url: # From cognito_config.json  
-  client_secret: # From cognito_config.json
-  client_id: # From cognito_config.json
+agent_information:
+  ops_orchestrator_agent_model_info:
+    # Model configuration
+    model_id: "gpt-4o-2024-08-06"
+
+    # Inference parameters
+    inference_parameters:
+      temperature: 0.1
+      max_tokens: 2048
+
+    # Runtime configuration
+    launch_agentcore_runtime: true
+    runtime_exec_role: "arn:aws:iam::YOUR-ACCOUNT:role/YOUR-EXECUTION-ROLE"
+
+    # Memory configuration (optional)
+    memories:
+      lead_agent:
+        use_existing: false
+
+    memory_allocation:
+      actor_id: "actor_agent_openAI_user"
+
+# this is information about the cloudwatch related tools that will be used
+# in the agent
+cloudwatch_agent_resources:
+  # This information will be used to export all of the OTEL data to cloudwatch
+  # for AgentCore observability to be enabled
+  log_group_name: <provide a log group from cloudwatch and if it doesn't exist, a new one is created>
+  log_stream_name: <provide a log stream name of choice>
 ```
 
-### 4. Launch Agent
+## Running the Ops Orchestrator Agent as an A2A Server
 
-#### AgentCore Runtime (Default)
+The Ops Orchestrator Agent supports the Agent-to-Agent (A2A) protocol, enabling seamless communication between AI agents across different platforms and implementations.
+
+### Option 1: Local Testing
+
+Test the agent locally in interactive mode:
+
 ```bash
 python ops_remediation_agent.py
 ```
 
-#### Interactive Mode
-```bash  
-python ops_remediation_agent.py --interactive
+This will:
+- Create an ops orchestrator strands agent with web search and JIRA capabilities
+- Wrap the agent to provide A2A protocol compatibility
+- Dynamically construct the correct URL based on the deployment context using the agentcore `runtime` URL
+- A2A servers run on port `9000` by default in AgentCore runtime
+
+#### Test the A2A Server Locally
+
+Once you run the command above, the A2A server for the ops orchestrator agent should be set up as follows:
+
+```bash
+🚀 Starting Ops Remediation Agent A2A Server on 127.0.0.1:9000
+✅ A2A Server configured
+📍 Server URL: http://127.0.0.1:9000
+🏥 Health check: http://127.0.0.1:9000/health
+🏓 Ping: http://127.0.0.1:9000/ping
+INFO:     Started server process [52068]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:9000 (Press CTRL+C to quit)
 ```
 
-#### Single Command
-```bash
-python ops_remediation_agent.py --command "search best practices for EC2 utilization"
-```
+Open another terminal and run the following command to send a request to the agent:
 
-## Usage Example
-
-Test via HTTP with bearer token:
 ```bash
-curl -X POST http://localhost:8080/invoke \
-  -H "Authorization: Bearer YOUR_TOKEN" \
+curl -X POST http://0.0.0.0:9000 \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "can you search up the best practices for managing ec2 instance utilization?"}'
+  -d '{
+    "jsonrpc": "2.0",
+    "id": "req-001",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "role": "user",
+        "parts": [
+          {
+            "kind": "text",
+            "text": "Search for best practices for managing EC2 instance utilization"
+          }
+        ],
+        "messageId": "d0673ab9-796d-4270-9435-451912020cd1"
+      }
+    }
+  }' | jq .
 ```
 
-Expected output:
+This will search for best practices and provide recommendations.
+
+#### Test the Agent Card Retrieval
+
+Run the following command to retrieve the agent card of the server:
+
+```bash
+curl http://localhost:9000/.well-known/agent-card.json | jq .
+```
+
+Output:
+
 ```json
 {
-  "response": {
-    "output": "Here are some useful resources on best practices for managing EC2 instance utilization..."
-  }
+  "capabilities": {
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text"
+  ],
+  "defaultOutputModes": [
+    "text"
+  ],
+  "description": "An operations orchestrator agent that searches for best practices, creates JIRA tickets, and provides infrastructure remediation guidance",
+  "name": "ops_orchestrator_agent",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.3.0",
+  "skills": [
+    {
+      "description": "Search the web for AWS best practices and documentation",
+      "id": "web_search",
+      "name": "web_search",
+      "tags": []
+    },
+    {
+      "description": "Create JIRA tickets for infrastructure issues",
+      "id": "create_jira_ticket",
+      "name": "create_jira_ticket",
+      "tags": []
+    }
+  ],
+  "url": "http://127.0.0.1:9000/",
+  "version": "1.0.0"
 }
 ```
 
-## Configuration Files
+### Option 2: Deploy Your A2A Server to Bedrock AgentCore Runtime
 
-- `config.yaml` - Agent configuration and AWS settings
-- `.env` - API keys (local development only)
-- `cognito_config.json` - Generated after Cognito setup
-- `requirements.txt` - Python dependencies
+To deploy this A2A server on `AgentCore` runtime, follow the steps below:
+
+1. Make sure that the Amazon Bedrock `AgentCore` CLI is installed. The `uv` environment contains the required packages preinstalled. If not, then run the following command:
+
+```bash
+uv pip install bedrock-agentcore-starter-toolkit
+```
+
+2. Create a `requirements.txt` file with the following content:
+
+```txt
+strands-agents[a2a]
+bedrock-agentcore
+strands-agents-tools
+openai
+tavily-python
+```
+
+3. **Set up Cognito user pool for authentication**: Use the OAuth information from Step 2. To configure your own IdP information to enable OAuth with the agent running on Runtime, see [Set up Cognito user pool for authentication](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-mcp.html#set-up-cognito-user-pool-for-authentication) in the documentation.
+
+4. **Configure your A2A server for deployment**
+
+After setting up authentication, create the deployment configuration:
+
+```bash
+agentcore configure -e ops_remediation_agent.py --protocol A2A
+```
+
+5. **Deploy to AWS**
+
+Deploy your agent to `AgentCore` runtime:
+
+```bash
+agentcore launch
+```
+
+6. **Fetch the agent card using OAuth 2.0**
+
+Run the following script that will generate the access token to invoke the `agent card` URL:
+
+```bash
+cd ..
+python retrieve_agent_card.py
+```
+
+This script will prompt you for:
+1. Agent ARN (use the agent arn from the `.bedrock_agentcore.yaml` file)
+2. OAuth 2.0 information (Discovery URL, allowed `client IDs`)
+
+Once done, this script will generate the bearer token and invoke the agent running on `AgentCore` Runtime as an A2A server.
+
+Now you should have an agent running as an A2A server on `AgentCore` Runtime that can search for best practices, create JIRA tickets, and provide remediation guidance.
+
+## Next Steps
+
+Navigate to the `A2A` directory to bring all agents together and enable agent-to-agent communication between the monitoring agent and ops orchestrator agent.

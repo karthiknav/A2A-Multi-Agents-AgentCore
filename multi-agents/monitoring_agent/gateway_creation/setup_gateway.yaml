@@ -3,7 +3,7 @@ gateway_config:
   # that this agent has access to - this can be an existing gateway in the case
   # of which you would have to configure the access token for inbound auth of
   # this gateway
-  name: "monitoring-gateway"
+  name: "monitoring-GW"
   # this is the name of the bucket where the target files (openapi or smithy) will
   # be uploaded from
   bucket_name: fmbench-deep-dive
@@ -31,5 +31,5 @@ gateway_config:
   # Fetch this information from the idp_setup/cognito_config.json after running the 
   # cognito script. If not, then provide this information from your IdP of choice
   auth_info:
-    discovery_url: https://cognito-idp.us-west-2.amazonaws.com/us-west-2_4tapKqA3u/.well-known/openid-configuration
-    client_id: 6jo3iqprnn92afe1fei82o8hle
+    discovery_url: https://cognito-idp.us-west-2.amazonaws.com/us-west-2_OUiVFLL63/.well-known/openid-configuration
+    client_id: 4499k4uggapl8ntoifog8jc6a7

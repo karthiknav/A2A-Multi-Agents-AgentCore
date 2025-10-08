@@ -22,6 +22,8 @@ import shutil
 import logging
 import base64
 import argparse
+import uvicorn
+from fastapi import FastAPI
 import re
 from botocore.exceptions import ClientError
 # import the strands agents and strands tools that we will be using
@@ -39,6 +41,8 @@ from bedrock_agentcore.memory import MemoryClient
 # we will associate a session ID with our telemetry data using the 
 # Open Telemetry baggage
 from opentelemetry import context, baggage
+# This
+from strands.multiagent.a2a.server import A2AServer
 # This will help set up for strategies that can then be used 
 # across the code - user preferences, semantic memory or even
 # summarizations across the sessions along with custom strategies
@@ -342,9 +346,6 @@ print(f"Initialized the bedrock model for the monitoring agent: {bedrock_model}"
 # Import only what's needed for the AgentCore app entrypoint
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 
-# Create app instance for entrypoint decorator
-app = BedrockAgentCoreApp()
-
 # Create MCP client and agent at module level for reuse
 from strands.tools.mcp.mcp_client import MCPClient
 from mcp.client.streamable_http import streamablehttp_client 
@@ -363,6 +364,7 @@ def create_streamable_http_transport():
             client_secret=config_data['idp_setup'].get('client_secret'),
             scope_string=scope_string,
             discovery_url=config_data['idp_setup'].get('discovery_url'),
+            domain=config_data['idp_setup'].get('domain'),
         )
         print(f"Token response: {token_response}")
         # Check if token request was successful
@@ -385,152 +387,85 @@ print(f"Going to start the MCP session...")
 mcp_client = MCPClient(create_streamable_http_transport)
 print(f"Started the MCP session client...")
 
-def invoke_agent_with_mcp_session(user_message):
-    """
-    Invoke the agent within an MCP client session context.
-    This ensures the MCP client is properly initialized before agent execution.
-    """
-    # Initialize gateway tools
-    print(f"Going to list tools from the MCP client")
-    try:
-        with mcp_client:
-            gateway_tools = mcp_client.list_tools_sync()
-            print(f"Loaded {len(gateway_tools)} tools from Gateway...")
-            # Create agent with Gateway MCP tools + memory hooks + observability hooks
-            hooks = [monitoring_hooks]
-            MONITORING_AGENT_SYSTEM_PROMPT_W_USER_QUESTION: str = MONITORING_AGENT_SYSTEM_PROMPT.format(question=user_message)
-            # Initialize agent at module level
-            agent = Agent(
-                system_prompt=MONITORING_AGENT_SYSTEM_PROMPT_W_USER_QUESTION,
-                model=bedrock_model,
-                hooks=hooks,
-                tools=gateway_tools,
-            )
-            response = agent(user_message)
-            print(f"Response: {response}")
-            return response.message['content'][0]['text']
-    except Exception as tools_error:
-        print(f"❌ Error listing tools from Gateway MCP server: {tools_error}")
-        raise
+# Use the complete agent runtime URL from the environment variable, fallback to localhost
+runtime_url = os.environ.get('AGENTCORE_RUNTIME_URL', 'http://127.0.0.1:9000/')
+logging.info(f"Runtime URL: {runtime_url}")
 
-print(f"✅ Created monitoring agent with Gateway MCP tools!")
+# define the host and port for the A2A server to run on
+# Port 8080 is required for AgentCore runtime, default to 9000 for local development
+host = os.environ.get('HOST', '0.0.0.0')
+port = int(os.environ.get('PORT', 9000))
 
-def ask_agent(prompt_text: str, session_id: str) -> str:
-    token = None
-    try:
-        token = set_session_context(session_id)
-        return invoke_agent_with_mcp_session(prompt_text)
-    finally:
-        if token is not None:
-            try:
-                context.detach(token)
-            except Exception:
-                pass
+# ────────────────────────────────────────────────────────────────────────────────────
+# A2A SERVER SETUP - Create agent and expose via A2A protocol
+# ────────────────────────────────────────────────────────────────────────────────────
 
-def filter_agent_output(output: str) -> str:
-    """
-    Filter agent output to show only relevant information for users.
-    Remove debug logs, technical details, and focus on:
-    - Tool calls
-    - Memory operations 
-    - Actual agent responses
-    """
-    if not output:
-        return output
-    
-    lines = output.split('\n')
-    filtered_lines = []
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-            
-        # Skip debug logs and technical output
-        skip_patterns = [
-            'DEBUG', 'INFO:', 'WARNING:', 'ERROR:',
-            'protocol version:', 'Request: POST', 'HTTP/1.1',
-            'streaming response', 'tool configurations',
-            'loaded tool config', 'tools configured',
-            'waiting for close signal', 'session initialized',
-            'received tool result', 'mapping MCP text content',
-            'tool execution completed', 'streaming messages'
-        ]
-        
-        if any(pattern in line for pattern in skip_patterns):
-            continue
-            
-        # Keep useful information - tool calls, memory operations, analysis
-        keep_patterns = [
-            'Tool #', '___',  # Any tool with ___ pattern
-            'memory', 'Memory', 'MEMORY',
-            'analysis', 'Analysis', 'ANALYSIS',
-            'result', 'Result', 'RESULT',
-            'error', 'Error', 'ERROR',
-            'alarm', 'Alarm', 'ALARM',
-            'dashboard', 'Dashboard', 'DASHBOARD',
-            'log', 'Log', 'LOG'
-        ]
-        
-        if any(pattern in line for pattern in keep_patterns) or len(line) > 50:
-            filtered_lines.append(line)
-    
-    return '\n'.join(filtered_lines) if filtered_lines else output
+print(f"🚀 Initializing Monitoring Agent with A2A server...")
 
-# --- add the interactive loop ---
-def interactive_cli(session_id: str):
-    print("\n🧪 Monitoring Agent CLI (type 'exit' to quit)")
-    print(f"session_id: {session_id}\n")
-    while True:
-        try:
-            q = input("you> ").strip()
-            if not q:
-                continue
-            if q.lower() in {"exit", "quit", "q"}:
-                print("bye 👋")
-                break
-            if q.lower() in {"help", "/help"}:
-                print("Commands: exit | help")
-                continue
+# Initialize agent within MCP context
+with mcp_client:
+    # List tools from gateway
+    gateway_tools = mcp_client.list_tools_sync()
+    print(f"✅ Loaded {len(gateway_tools)} tools from Gateway")
 
-            resp = ask_agent(q, session_id)
-            # Filter and display clean response
-            # clean_resp = filter_agent_output(resp)
-            print(f"agent> {resp}\n")
-        except KeyboardInterrupt:
-            print("\nbye 👋")
-            break
-        except Exception as e:
-            print(f"error: {e}\n")
+    # Create monitoring agent with MCP tools and hooks
+    hooks = [monitoring_hooks]
+    monitoring_agent = Agent(
+        # The name of the agent and the description of the agent are mandatory 
+        # fields to get started with creating an agent card through using this file
+        # to instantiate an A2A server
+        name="monitoring_agent",
+        description="A monitoring agent that handles CloudWatch logs, metrics, dashboards, and AWS service monitoring",
+        system_prompt=MONITORING_AGENT_SYSTEM_PROMPT,
+        model=bedrock_model,
+        hooks=hooks,
+        tools=gateway_tools,
+    )
+    print(f"✅ Created monitoring agent")
 
-@app.entrypoint
-def invoke(payload):
-    '''
-    This is the entrypoint function to invoke the monitoring agent.
-    This agent is created with tools from the MCP Gateway and can be
-    invoked both locally and via agent ARN using boto3 bedrock-agentcore client.
-    '''
-    # First, we will set the OTEL session baggage which will be used to emit traces, logs and metrics for
-    # each session, trace and span
-    try:
-        # initialize the response
-        response = None
-        context_token = set_session_context(args.session_id)
-        user_message = payload.get("prompt", "You are a monitoring agent to help with AWS monitoring related queries.")
-        print(f"Going to invoke the agent with the following prompt: {user_message}")
-        response = invoke_agent_with_mcp_session(user_message)
-        context.detach(context_token)
-    except Exception as e:
-        print(f"An error occurred while invoking the monitoring agent: {e}")
-        raise e
-    return response
+    # Create A2A server that wraps the monitoring agent
+    print(f"🔌 Creating A2A server at {host}:{port}...")
+    a2a_server = A2AServer(
+        agent=monitoring_agent,
+        host=host,
+        port=port,
+        http_url=runtime_url,
+        serve_at_root=True,
+        version="1.0.0"
+    )
+    print(f"✅ Created A2A server: {a2a_server}")
+
+    # Create FastAPI app and mount A2A server
+    app = FastAPI(title="Monitoring Agent A2A Server")
+
+    @app.get("/ping")
+    def ping():
+        """Health check endpoint"""
+        return {
+            "status": "healthy",
+            "agent": "monitoring_agent",
+            "session_id": session_id,
+            "tools_count": len(gateway_tools)
+        }
+
+    # Mount A2A server to FastAPI app
+    fastapi_app = a2a_server.to_fastapi_app()
+    starlette_app = a2a_server.to_starlette_app()
+    print(f"✅ A2A Monitoring Agent Ready!")
+    print(f"📍 Endpoint: http://{host}:{port}")
+    print(f"🏥 Health check: http://{host}:{port}/ping")
+
+# ────────────────────────────────────────────────────────────────────────────────────
+# RUN A2A SERVER
+# ────────────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    args = parse_arguments()
-    logger.info(f"Arguments: {args}")
-    session_id = args.session_id
+    # The MCP context is maintained through the server lifecycle
+    # The app variable is already defined in the module scope above
+    print(f"\n🚀 Starting A2A Monitoring Agent Server")
+    print(f"📍 Endpoint: http://{host}:{port}")
+    print(f"🏥 Health check: http://{host}:{port}/ping")
+    print(f"📋 Session ID: {session_id}\n")
 
-    if args.interactive:
-        interactive_cli(session_id)
-    else:
-        app.run()
+    # Run uvicorn server
+    uvicorn.run(fastapi_app, host=host, port=port)

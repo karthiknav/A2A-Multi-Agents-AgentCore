@@ -18,7 +18,8 @@ from utils import (
     setup_cognito_user_pool,
     get_or_create_user_pool,
     get_or_create_resource_server,
-    get_or_create_m2m_client
+    get_or_create_m2m_client,
+    create_cognito_domain
 )
 
 # Configure logging
@@ -92,7 +93,14 @@ def main():
             
         user_pool_id = cognito_config['pool_id']
         logger.info(f"Created User Pool ID: {user_pool_id}")
-        
+
+        # Create domain for the user pool
+        logger.info("Creating/checking Cognito domain...")
+        domain_info = create_cognito_domain(user_pool_id, region=region)
+        cognito_config['domain'] = domain_info['domain']
+        cognito_config['domain_url'] = domain_info['domain_url']
+        logger.info(f"Domain: {domain_info['domain']} ({domain_info['status']})")
+
         # Create resource server
         logger.info("Creating resource server...")
         get_or_create_resource_server(cognito, user_pool_id, RESOURCE_SERVER_ID, RESOURCE_SERVER_NAME, SCOPES)
@@ -128,6 +136,8 @@ def main():
         print("COGNITO SETUP COMPLETE")
         print("="*60)
         print(f"Pool ID: {cognito_config['pool_id']}")
+        print(f"Domain: {cognito_config.get('domain', 'N/A')}")
+        print(f"Domain URL: {cognito_config.get('domain_url', 'N/A')}")
         print(f"Client ID: {cognito_config['client_id']}")
         print(f"Discovery URL: {cognito_config['discovery_url']}")
         print(f"Username: testuser")

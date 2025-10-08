@@ -3,6 +3,7 @@ import sys
 import yaml
 import json
 import logging
+import time
 sys.path.insert(0, ".")
 sys.path.insert(1, "..")
 from utils import *
@@ -66,6 +67,29 @@ logger.info(f"Created the agentcore gateway for the monitoring agent: {create_re
 gatewayID=create_response['gatewayId']
 gatewayURL=create_response['gatewayUrl']
 logger.info(f"Going to be using the gateway ID: {gatewayID} and URL: {gatewayURL}")
+
+# Wait for the gateway to be in ACTIVE status before creating targets
+logger.info("Waiting for gateway to become ACTIVE...")
+max_wait_time = 300  # 5 minutes
+poll_interval = 10  # 10 seconds
+elapsed_time = 0
+
+while elapsed_time < max_wait_time:
+    gateway_status_response = gateway_client.get_gateway(gatewayIdentifier=gatewayID)
+    gateway_status = gateway_status_response['status']
+    logger.info(f"Current gateway status: {gateway_status}")
+
+    if gateway_status in ['ACTIVE', 'READY']:
+        logger.info(f"Gateway is now {gateway_status}. Proceeding with target creation.")
+        break
+    elif gateway_status in ['FAILED', 'DELETING', 'DELETED']:
+        raise Exception(f"Gateway creation failed with status: {gateway_status}")
+
+    time.sleep(poll_interval)
+    elapsed_time += poll_interval
+
+if elapsed_time >= max_wait_time:
+    raise TimeoutError(f"Gateway did not reach ACTIVE or READY status within {max_wait_time} seconds")
 
 tools_file_path = os.path.join("..", "tools", "lambda_monitoring_tools.json")
 with open(tools_file_path, 'r') as f:

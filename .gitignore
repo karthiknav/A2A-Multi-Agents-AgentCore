@@ -47,6 +47,10 @@ secrets.json
 .env.production
 .env.development
 
+# Configuration files with sensitive data
+**/cognito_config.json
+**/setup_gateway.yaml
+
 # IDE and editor files
 .vscode/
 .idea/

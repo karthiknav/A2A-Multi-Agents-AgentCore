@@ -24,7 +24,7 @@ agent_information:
     use_existing_memory: yes
     memory_credentials:
       # fetch this from your AWS console
-      id: MonitoringAgentGWNew_memory_1755723601-zkkauz3pO4
+      id: MonitoringAgentGWNew_memory_1759785717-D8LIGl6Grj
     memory_execution_role: arn:aws:iam::218208277580:role/memrole
     memory_allocation:
       # An actor refers to an entity such as an end user or an agent that interacts with the
@@ -39,8 +39,8 @@ agent_information:
     # GATEWAY CONFIGURATION FOR THE MONITORING AGENT
     gateway_config:
       # Run the steps in the gateway_creation folder to input the parameters below
-      name: monitoring-gateway
-      url: https://monitoring-gateway-xlapsfpffa.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp
+      name: monitoring-GW
+      url: https://monitoring-gw-3wuqmueqll.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp
     # This is if the agent is already configured and needs to be invokeds
     agent_arn: 
     # set this to false if the agent arn is provided from above
@@ -53,10 +53,15 @@ agent_information:
 # to get the values from that you can input below. This can be done through
 # cognito or even through another IdP
 idp_setup:
-  user_pool_id: us-west-2_4tapKqA3u
-  discovery_url: https://cognito-idp.us-west-2.amazonaws.com/us-west-2_4tapKqA3u/.well-known/openid-configuration
-  client_secret: 6buaehauhbc1j3fsb8g89a6nlv0o859j16j6ib56jvaojb7kfsg
-  client_id: 6jo3iqprnn92afe1fei82o8hle
+  user_pool_id: 
+  domain: 
+  discovery_url: 
+  client_secret: 
+  client_id: 
+  resource_server_identifier: 
+  scopes:
+    - 
+    - 
 
 
 # this is information about the cloudwatch related tools that will be used

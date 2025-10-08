@@ -17,6 +17,96 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+def get_parameter_from_ssm(
+    parameter_name: str,
+    region_name: str = "us-west-2",
+    decrypt: bool = True
+) -> str:
+    """
+    Retrieve parameter from AWS Systems Manager Parameter Store.
+
+    Args:
+        parameter_name: Name of the SSM parameter (e.g., '/ops-orchestrator/tavily-api-key')
+        region_name: AWS region where the parameter is stored
+        decrypt: Whether to decrypt SecureString parameters
+
+    Returns:
+        Parameter value as string
+
+    Raises:
+        ClientError: If parameter not found or access denied
+    """
+    ssm_client = boto3.client('ssm', region_name=region_name)
+    try:
+        response = ssm_client.get_parameter(
+            Name=parameter_name,
+            WithDecryption=decrypt
+        )
+        return response['Parameter']['Value']
+    except ClientError as e:
+        error_code = e.response['Error']['Code']
+        if error_code == 'ParameterNotFound':
+            logger.error(f"SSM parameter '{parameter_name}' not found in region {region_name}")
+        elif error_code == 'AccessDeniedException':
+            logger.error(f"Access denied to SSM parameter '{parameter_name}'. Check IAM permissions.")
+        else:
+            logger.error(f"Error retrieving SSM parameter '{parameter_name}': {e}")
+        raise
+
+
+def load_api_keys_from_ssm(config_data: dict) -> dict:
+    """
+    Load API keys from SSM Parameter Store based on config.
+    Falls back to environment variables if SSM retrieval fails.
+
+    Args:
+        config_data: Configuration dictionary containing SSM parameter paths
+
+    Returns:
+        Dictionary with API keys: {'TAVILY_API_KEY': '...', 'OPENAI_API_KEY': '...', ...}
+    """
+    api_keys = {}
+    ssm_config = config_data.get('ssm_parameters', {})
+    region = ssm_config.get('region', 'us-west-2')
+    parameters = ssm_config.get('parameters', {})
+
+    # Map of environment variable names to SSM parameter keys
+    key_mapping = {
+        'TAVILY_API_KEY': 'tavily_api_key',
+        'OPENAI_API_KEY': 'openai_api_key',
+        'JIRA_API_KEY': 'jira_api_key'
+    }
+
+    for env_var, param_key in key_mapping.items():
+        try:
+            # Try SSM first
+            param_path = parameters.get(param_key)
+            if param_path:
+                logger.info(f"Retrieving {env_var} from SSM: {param_path}")
+                api_keys[env_var] = get_parameter_from_ssm(param_path, region)
+                logger.info(f"✅ Successfully retrieved {env_var} from SSM")
+            else:
+                # Fall back to environment variable
+                logger.warning(f"No SSM parameter configured for {env_var}, checking environment variables")
+                value = os.getenv(env_var)
+                if value:
+                    api_keys[env_var] = value
+                    logger.info(f"✅ Loaded {env_var} from environment variable")
+                else:
+                    logger.error(f"❌ {env_var} not found in SSM or environment variables")
+        except Exception as e:
+            # Fall back to environment variable on any error
+            logger.warning(f"Failed to retrieve {env_var} from SSM: {e}. Falling back to environment variable.")
+            value = os.getenv(env_var)
+            if value:
+                api_keys[env_var] = value
+                logger.info(f"✅ Loaded {env_var} from environment variable (fallback)")
+            else:
+                logger.error(f"❌ {env_var} not found in SSM or environment variables")
+
+    return api_keys
+
+
 def get_secret(secret_name: str, region_name: str = 'us-west-2') -> str:
     """
     Retrieve a secret from AWS Secrets Manager.

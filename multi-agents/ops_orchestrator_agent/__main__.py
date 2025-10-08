@@ -1,3 +1,4 @@
+# Main file for the Ops Orchestrator Agent A2A server
 import os
 import sys
 import yaml
@@ -11,25 +12,33 @@ from a2a.server.apps import A2AStarletteApplication
 from a2a.server.request_handlers import DefaultRequestHandler
 from a2a.server.tasks import InMemoryTaskStore
 from a2a.types import AgentCapabilities, AgentCard, AgentSkill
-from utils import get_agent_config
-from agent_executer import MonitoringAgentCoreExecutor
+from a2a_utils import get_agent_config
+from a2a_agent_executor import OpsOrchestratorAgentCoreExecutor
+
+# Import the ops agent to get the agent ARN
+from ops_remediation_agent import get_or_create_agentcore_agent
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 class MissingConfigError(Exception):
     pass
 
-def required_env(name: str) -> str:
+
+def required_env(
+    name: str
+) -> str:
     v = os.getenv(name)
     if not v:
         raise MissingConfigError(f"Missing required env: {name}")
     return v
 
+
 def load_config() -> dict:
-    """Load configuration from config.yaml file."""
-    config_path = Path(__file__).parent / "config.yaml"
+    """Load configuration from a2a_config.yaml file."""
+    config_path = Path(__file__).parent / "a2a_config.yaml"
     try:
         with open(config_path, 'r') as f:
             return yaml.safe_load(f)
@@ -38,28 +47,34 @@ def load_config() -> dict:
     except yaml.YAMLError as e:
         raise MissingConfigError(f"Error parsing config file: {e}")
 
+
 def main():
-    """Starts the AgentCore Monitoring Agent A2A server."""
-    print("Starting AgentCore Monitoring Agent A2A server...")
-    
+    """Starts the AgentCore Ops Orchestrator Agent A2A server."""
+    print("Starting AgentCore Ops Orchestrator Agent A2A server...")
+
     # Load configuration
-    print("Loading configuration from config.yaml...")
+    print("Loading configuration from a2a_config.yaml...")
     config = load_config()
     print("Configuration loaded successfully")
-    
+
     # Server configuration with defaults from config
     host = config['server']['default_host']
     port = int(str(config['server']['default_port']))
     print(f"Server will start on {host}:{port}")
 
     try:
-        # ---- Identity / Gateway config (from config.yaml and AWS Secrets Manager) ----
+        # Get or create the AgentCore agent to get the agent ARN
+        print("Getting or creating AgentCore agent runtime...")
+        agent_arn = get_or_create_agentcore_agent()
+        print(f"Agent ARN: {agent_arn}")
+
+        # Load agent configuration and credentials with the agent ARN
         print("Loading agent configuration and credentials...")
-        agent_config = get_agent_config()
+        agent_config = get_agent_config(agent_arn=agent_arn)
         print("Agent configuration loaded successfully")
-        
+
         base_url = agent_config['base_url']
-        agent_arn = agent_config['agent_arn'] 
+        agent_arn = agent_config['agent_arn']
         agent_session_id = agent_config['agent_session_id']
         user_pool_id = agent_config['user_pool_id']
         client_id = agent_config['client_id']
@@ -67,14 +82,13 @@ def main():
         scope = agent_config['scope']
         discovery_url = agent_config.get('discovery_url')
         identity_provider = agent_config.get('identity_group')
-        
-        
+
         print(f"Base URL: {base_url}")
         print(f"Agent ARN: {agent_arn}")
         print(f"Session ID: {agent_session_id}")
         print(f"Going to use the following identity provider: {identity_provider}")
-        
-        # ---- A2A Agent metadata (Card + Skills) from config ----
+
+        # A2A Agent metadata (Card + Skills) from config
         print("Setting up agent capabilities and skills...")
         capabilities = AgentCapabilities(
             streaming=config['agent_metadata']['capabilities']['streaming'],
@@ -101,7 +115,7 @@ def main():
         agent_card = AgentCard(
             name=config['agent_metadata']['name'],
             description=config['agent_metadata']['description'],
-            url=base_url,
+            url=f"http://{host}:{port}",
             version=config['agent_metadata']['version'],
             defaultInputModes=supported_ct,
             defaultOutputModes=supported_ct,
@@ -111,18 +125,18 @@ def main():
         )
         print(f"Agent card created: {agent_card}")
 
-        # ---- Wire executor into the A2A app ----
+        # Wire executor into the A2A app
         print("Initializing agent executor and request handler...")
         httpx_client = httpx.AsyncClient()
         request_handler = DefaultRequestHandler(
-            agent_executor=MonitoringAgentCoreExecutor(
+            agent_executor=OpsOrchestratorAgentCoreExecutor(
                 base_url=base_url,
                 agent_arn=agent_arn,
                 agent_session_id=agent_session_id,
                 user_pool_id=user_pool_id,
                 client_id=client_id,
                 client_secret=client_secret,
-                scope='monitoring-agentcore-gateway-id/gateway:read monitoring-agentcore-gateway-id/gateway:write',
+                scope=scope,
                 discovery_url=discovery_url,
                 identity_provider=identity_provider,
             ),
@@ -132,14 +146,24 @@ def main():
 
         print("Creating A2A Starlette application...")
         server = A2AStarletteApplication(agent_card=agent_card, http_handler=request_handler)
+
+        # Add health check endpoint
+        app = server.build()
+
+        @app.get("/health")
+        async def health_check():
+            return {"status": "healthy", "agent": "ops_orchestrator"}
+
         print(f"Starting server on http://{host}:{port}")
-        uvicorn.run(server.build(), host=host, port=port)
+        print(f"Health check available at http://{host}:{port}/health")
+        uvicorn.run(app, host=host, port=port)
 
     except MissingConfigError as e:
         logger.error("Configuration error: %s", e)
         sys.exit(1)
     except Exception as e:
         logger.error("An error occurred during server startup: %s", e)
+        logger.exception("Full traceback:")
         sys.exit(1)
 
 
