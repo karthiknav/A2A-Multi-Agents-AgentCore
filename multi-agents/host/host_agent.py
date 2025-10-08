@@ -14,7 +14,6 @@ import urllib.parse
 import uuid
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import quote
 from typing import Any, AsyncIterable, Dict, List, Optional
 
 import boto3
@@ -103,6 +102,7 @@ def _extract_runtime_url(
     # ARN format: arn:aws:bedrock-agentcore:region:account:runtime/agent-id
     endpoint = f"https://bedrock-agentcore.{region}.amazonaws.com"
     escaped = urllib.parse.quote(runtime_arn, safe="")
+    # Construct the agent runtime URL
     return f"{endpoint}/runtimes/{escaped}/invocations"
 
 
@@ -124,12 +124,10 @@ async def _get_bearer_token(
     domain = idp_config["domain"]
     region = idp_config["user_pool_id"].split("_")[0]  # Extract region from user_pool_id
     token_endpoint = f"https://{domain}.auth.{region}.amazoncognito.com/oauth2/token"
-
     # Build scope string
     scopes = idp_config.get("scopes", [])
     resource_server = idp_config["resource_server_identifier"]
     scope_str = " ".join([f"{resource_server}/{scope}" for scope in scopes])
-
     # OAuth client credentials request
     token_data = {
         "grant_type": "client_credentials",
@@ -137,26 +135,21 @@ async def _get_bearer_token(
         "client_secret": idp_config["client_secret"],
         "scope": scope_str,
     }
-
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(
             token_endpoint,
             data=token_data,
             headers={"Content-Type": "application/x-www-form-urlencoded"},
         )
-
         response.raise_for_status()
         token_response = response.json()
         access_token = token_response["access_token"]
-        print(f"Fetched the access token: {access_token}")
         logger.info("Successfully obtained bearer token")
-
         return access_token
 
 
 class RemoteAgent:
     """Represents a remote agent with A2A communication capabilities."""
-
     def __init__(
         self,
         name: str,
@@ -187,20 +180,16 @@ class RemoteAgent:
                 "Content-Type": "application/json",
             },
         )
-
         # Agent card and A2A client (initialized during discovery)
         self.agent_card: Optional[AgentCard] = None
         self.a2a_client: Optional[A2AClient] = None
 
     async def discover(self):
         """Discover agent capabilities by fetching agent card."""
-        logger.info(f"Discovering agent card for {self.name}")
-
+        logger.info(f"Discovering agent card for {self.name} at {self.runtime_url}")
         card_resolver = A2ACardResolver(self.httpx_client, self.runtime_url)
         self.agent_card = await card_resolver.get_agent_card()
-
         logger.info(f"Successfully discovered {self.name}")
-
         # Initialize A2A client
         self.a2a_client = A2AClient(
             self.httpx_client,
@@ -227,7 +216,6 @@ class RemoteAgent:
         logger.info(f"Sending message to {self.name}")
         response = await self.a2a_client.send_message(message_request)
         logger.info(f"Received response from {self.name}")
-
         return response
 
     async def close(self):
@@ -274,26 +262,23 @@ class HostAgent:
         """
         logger.info("Starting remote agent discovery")
 
-        agents_config = self.config.get("agents", [])
-
+        agents_config = self.config.get("agents")
+        logger.info(f"Going to create a remote connection with {len(agents_config)} agents...")
         for agent_config in agents_config:
             agent_name = agent_config["name"]
             runtime_arn = agent_config["runtime_arn"]
             region = agent_config["region"]
             ssm_path = agent_config["ssm_idp_config_path"]
-
             logger.info(f"Discovering agent: {agent_name}")
 
             try:
                 # Fetch IDP config from SSM
                 idp_config = _fetch_ssm_parameter(ssm_path, region)
-
                 # Get bearer token
                 bearer_token = await _get_bearer_token(idp_config)
-
                 # Extract runtime URL
                 runtime_url = _extract_runtime_url(runtime_arn, region)
-                print(f"Runtime URL for agent {agent_name}: {runtime_url}")
+                logger.info(f"Runtime URL for agent {agent_name}: {runtime_url}")
                 # Create remote agent
                 remote_agent = RemoteAgent(
                     name=agent_name,
@@ -301,26 +286,20 @@ class HostAgent:
                     runtime_url=runtime_url,
                     bearer_token=bearer_token,
                 )
-
                 # Discover agent card
                 await remote_agent.discover()
-
                 # Store agent
                 self.remote_agents[agent_name] = remote_agent
-                print(f"Successfully discovered {agent_name}")
+                logger.info(f"Successfully discovered {agent_name}")
             except Exception as e:
                 logger.error(f"Failed to discover {agent_name}: {e}")
 
         # Build agent information for system prompt
         if self.remote_agents:
-            agent_info_list = [
-                json.dumps({
-                    "name": agent.name,
-                    "description": agent.description,
-                })
+            self.agents_info = "\n".join(
+                json.dumps({"name": agent.name, "description": agent.description})
                 for agent in self.remote_agents.values()
-            ]
-            self.agents_info = "\n".join(agent_info_list)
+            )
             logger.info(f"Discovered {len(self.remote_agents)} agents")
         else:
             self.agents_info = "No agents available"
@@ -386,9 +365,6 @@ Core Directives:
     - OpsRemediation_Agent: For searching remediation strategies, AWS documentation, troubleshooting guidance
 
 Today's Date (YYYY-MM-DD): {datetime.now().strftime("%Y-%m-%d")}
-
-Available Agents:
-{self.agents_info}
 """
 
     async def send_message_to_agent(
@@ -450,8 +426,7 @@ Available Agents:
                 message_request
             )
 
-            print(f"Received response from {agent_name}")
-            print(f"RESPONSE: {response}")
+            logger.debug(f"Received response from {agent_name}: {response}")
             # Parse response
             if not isinstance(
                 response.root, SendMessageSuccessResponse
