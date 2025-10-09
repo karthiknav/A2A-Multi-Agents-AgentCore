@@ -80,10 +80,15 @@ def set_session_context(session_id: str):
         raise e
     return token
 
-# We will now initialize the OTEL variables that will be used from the 
-# environment variables to enable python distro, python configurator, 
-# protocol over which the telemetry data will be sent, 
+# We will now initialize the OTEL variables that will be used from the
+# environment variables to enable python distro, python configurator,
+# protocol over which the telemetry data will be sent,
 # the headers (session id, trace id, etc), etc.
+# Disable OTLP trace exporter to prevent CloudWatch Logs configuration errors
+# This prevents "Failed to export batch code: 400" errors from OTLP exporter
+os.environ.setdefault("OTEL_TRACES_EXPORTER", "none")
+os.environ.setdefault("OTEL_METRICS_EXPORTER", "none")
+
 # Only show OTEL config in non-interactive mode
 if "--interactive" not in sys.argv:
     otel_vars = [
@@ -120,9 +125,15 @@ from agents import Agent, Runner
 
 # Add a handler to see the logs
 logging.basicConfig(
-    format="%(levelname)s | %(name)s | %(message)s", 
+    format="%(levelname)s | %(name)s | %(message)s",
     handlers=[logging.StreamHandler()]
 )
+
+# Suppress OpenTelemetry OTLP exporter errors to prevent error spam
+# These errors occur when CloudWatch Logs isn't configured as trace destination
+logging.getLogger("opentelemetry.exporter.otlp.proto.http.trace_exporter").setLevel(logging.CRITICAL)
+logging.getLogger("opentelemetry.exporter.otlp.proto.http.metric_exporter").setLevel(logging.CRITICAL)
+
 sys.path.insert(0, ".")
 sys.path.insert(1, "..")
 from utils import *

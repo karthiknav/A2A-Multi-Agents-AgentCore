@@ -4,11 +4,14 @@ This operations orchestrator agent is built using AWS Bedrock AgentCore runtime 
 
 ## Prerequisites
 
+Create the `uv` environment as provided in the top level `README.md` file.
+
+Additionally, ensure you have:
 - **AWS Account and Credentials**: Ensure AWS credentials are configured
 - **Python 3.11+**: Required for all components
 - **IAM Permissions**: Admin access or sufficient permissions for:
   - Amazon Bedrock AgentCore
-  - AWS Secrets Manager
+  - AWS Systems Manager Parameter Store
   - Amazon Cognito
   - IAM role creation
 - **API Keys**:
@@ -19,9 +22,9 @@ This operations orchestrator agent is built using AWS Bedrock AgentCore runtime 
 ## Overview
 
 The setup process consists of 3 main steps:
-1. **Secrets Management** - Store API keys in AWS Secrets Manager
-2. **Cognito Authentication** - Set up authentication for the agent
-3. **Agent Runtime** - Deploy and test the ops orchestrator agent
+1. **API Keys Management** - Store API keys securely in AWS Systems Manager Parameter Store or use environment variables
+2. **Cognito Authentication** - Set up inbound authentication for the agent to be accessed via OAuth 2.0
+3. **Agent Runtime** - Deploy and test the ops orchestrator agent as an A2A server on AgentCore Runtime. For more information on A2A server deployment on AgentCore, view this [documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-a2a.html)
 
 ## Step 1: API Keys Management
 
@@ -91,26 +94,9 @@ Ensure your IAM role/user has the following permissions:
 
 The agent will automatically load these keys from SSM Parameter Store using the configuration in `config.yaml`.
 
-### Option B: Use Environment Variables (Fallback)
-
-Alternatively, create a `.env` file in the ops_orchestrator_agent directory:
-
-```bash
-# OpenAI API Key (required)
-OPENAI_API_KEY=your_openai_api_key_here
-
-# Tavily API Key (for web search)
-TAVILY_API_KEY=your_tavily_api_key_here
-
-# JIRA API Key (optional)
-JIRA_API_KEY=your_jira_api_key_here
-```
-
-The agent will automatically fall back to environment variables if SSM retrieval fails.
-
 ## Step 2: Cognito Authentication Setup
 
-Set up Amazon Cognito for authentication to the ops orchestrator agent.
+Set up Amazon Cognito for inbound authentication to the ops orchestrator agent. For more information on how AgentCore identity works, view the documentation [here](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/identity.html).
 
 ### 2.1 Navigate to IdP Setup Directory
 
@@ -131,7 +117,7 @@ This will:
 - Set up a resource server with appropriate scopes
 - Create M2M (machine-to-machine) client credentials
 - Generate a test user for authentication
-- Save configuration to `cognito_config.json`
+- Save configuration to `idp_setup/cognito_config.json`
 
 ### 2.3 Record Cognito Configuration
 
@@ -142,7 +128,7 @@ COGNITO SETUP COMPLETE
 ====================================
 Pool ID: us-west-2_XXXXXXXXX
 Client ID: XXXXXXXXXXXXXXXXXXXXXXXXXX
-Discovery URL: https://cognito-idp.us-west-2.amazonaws.com/us-west-2_XXXXXXXXX/.well-known/openid-configuration
+Discovery URL: https://cognito-idp.us-west-2.amazonaws.com/us-west-2_XXXXXXXXX/.well-known/jwks.json
 Username: testuser
 Password: MyPassword123!
 M2M Client ID: XXXXXXXXXXXXXXXXXXXXXXXXXX
@@ -156,9 +142,15 @@ Save these values - you'll need them for agent configuration.
 
 Deploy and test the `ops` orchestrator agent runtime.
 
-### 3.1 Update Agent Configuration
+### 3.1 Navigate to Main Directory
 
-Update the remaining sections in `config.yaml`:
+```bash
+cd ..
+```
+
+### 3.2 Update Agent Configuration
+
+Update the sections in `config.yaml` with your setup information:
 
 ```yaml
 agent_information:
@@ -170,37 +162,46 @@ agent_information:
     inference_parameters:
       temperature: 0.1
       max_tokens: 2048
+  # set this to yes and provide the memory created from before
+  use_existing_memory: yes
+    memory_credentials:
+      # fetch this from your AWS console
+      id: 
 
-    # Runtime configuration
-    launch_agentcore_runtime: true
-    runtime_exec_role: "arn:aws:iam::YOUR-ACCOUNT:role/YOUR-EXECUTION-ROLE"
+# Fetch this information from the cognito_config.json file and the console
+# This would be retrieved from SSM or Identity provider in prod
+idp_setup:
+  user_pool_id:
+  domain:
+  discovery_url:
+  client_secret:
+  client_id:
+  resource_server_identifier:
+  scopes:
+    -
+    -
 
-    # Memory configuration (optional)
-    memories:
-      lead_agent:
-        use_existing: false
-
-    memory_allocation:
-      actor_id: "actor_agent_openAI_user"
-
-# this is information about the cloudwatch related tools that will be used
+# This is information about the cloudwatch related tools that will be used
 # in the agent
 cloudwatch_agent_resources:
   # This information will be used to export all of the OTEL data to cloudwatch
   # for AgentCore observability to be enabled
-  log_group_name: <provide a log group from cloudwatch and if it doesn't exist, a new one is created>
-  log_stream_name: <provide a log stream name of choice>
+  log_group_name: "" # provide this else it will be created
+  log_stream_name: "" # provide this else it will be created
 ```
 
 ## Running the Ops Orchestrator Agent as an A2A Server
 
-The Ops Orchestrator Agent supports the Agent-to-Agent (A2A) protocol, enabling seamless communication between AI agents across different platforms and implementations.
+Strands Agents supports the Agent-to-Agent (A2A) protocol, enabling seamless communication between AI agents across different platforms and implementations.
+
+The Agent-to-Agent protocol is an open standard that defines how AI agents can discover, communicate, and collaborate with each other.
 
 ### Option 1: Local Testing
 
 Test the agent locally in interactive mode:
 
 ```bash
+cd ..
 python ops_remediation_agent.py
 ```
 
@@ -306,19 +307,9 @@ To deploy this A2A server on `AgentCore` runtime, follow the steps below:
 uv pip install bedrock-agentcore-starter-toolkit
 ```
 
-2. Create a `requirements.txt` file with the following content:
+2. **Set up Cognito user pool for authentication**: Use the OAuth information from Step 2. To configure your own IdP information to enable OAuth with the agent running on Runtime, see [Set up Cognito user pool for authentication](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-mcp.html#set-up-cognito-user-pool-for-authentication) in the documentation.
 
-```txt
-strands-agents[a2a]
-bedrock-agentcore
-strands-agents-tools
-openai
-tavily-python
-```
-
-3. **Set up Cognito user pool for authentication**: Use the OAuth information from Step 2. To configure your own IdP information to enable OAuth with the agent running on Runtime, see [Set up Cognito user pool for authentication](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-mcp.html#set-up-cognito-user-pool-for-authentication) in the documentation.
-
-4. **Configure your A2A server for deployment**
+3. **Configure your A2A server for deployment**
 
 After setting up authentication, create the deployment configuration:
 

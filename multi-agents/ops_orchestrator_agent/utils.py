@@ -1623,3 +1623,108 @@ def create_openapi_targets_with_oauth(gateway_id: str, bucket_name: str) -> List
             continue
     
     return created_targets
+
+def create_cognito_domain(
+    user_pool_id: str, 
+    domain_name: Optional[str] = None,
+    region: Optional[str] = None
+) -> Dict[str, str]:
+    """
+    Create a domain for the Cognito User Pool.
+    
+    Args:
+        user_pool_id: The Cognito User Pool ID
+        domain_name: Optional custom domain name. If not provided, creates one from pool ID
+        region: AWS region. If not provided, uses current session region
+        
+    Returns:
+        Dictionary containing domain information with 'domain' and 'domain_url' keys
+        
+    Raises:
+        Exception: If domain creation fails
+    """
+    if region is None:
+        boto_session = Session()
+        region = boto_session.region_name
+    
+    cognito_client = boto3.client('cognito-idp', region_name=region)
+    
+    try:
+        # Check if domain already exists for this user pool
+        try:
+            response = cognito_client.describe_user_pool(UserPoolId=user_pool_id)
+            user_pool = response.get('UserPool', {})
+            existing_domain = user_pool.get('Domain')
+            
+            if existing_domain:
+                domain_url = f"https://{existing_domain}.auth.{region}.amazoncognito.com"
+                logger.info(f"Domain already exists for user pool {user_pool_id}: {existing_domain}")
+                return {
+                    'domain': existing_domain,
+                    'domain_url': domain_url,
+                    'status': 'existing'
+                }
+        except Exception as e:
+            logger.error(f"Error checking existing domain: {e}")
+        
+        # Generate domain name if not provided
+        if domain_name is None:
+            # Create domain name from pool ID - remove first underscore and convert to lowercase
+            if '_' in user_pool_id:
+                domain_name = user_pool_id.replace('_', '', 1).lower()
+            else:
+                domain_name = user_pool_id.lower()
+        
+        # Ensure domain name is valid (alphanumeric and hyphens only, lowercase)
+        domain_name = domain_name.lower().replace('_', '-')
+        
+        logger.info(f"Creating Cognito domain: {domain_name} for pool: {user_pool_id}")
+        
+        # Create the domain
+        response = cognito_client.create_user_pool_domain(
+            Domain=domain_name,
+            UserPoolId=user_pool_id
+        )
+        
+        domain_url = f"https://{domain_name}.auth.{region}.amazoncognito.com"
+        
+        logger.info(f"Successfully created domain: {domain_name}")
+        logger.info(f"Domain URL: {domain_url}")
+        
+        return {
+            'domain': domain_name,
+            'domain_url': domain_url,
+            'status': 'created',
+            'cloudfront_domain': response.get('CloudFrontDomain', '')
+        }
+        
+    except cognito_client.exceptions.InvalidParameterException as e:
+        if 'Domain already associated' in str(e):
+            # Domain might be associated with another pool
+            logger.warning(f"Domain {domain_name} already in use: {e}")
+            # Try with a timestamp suffix
+            import time
+            timestamp_suffix = str(int(time.time()))[-6:]
+            new_domain_name = f"{domain_name}-{timestamp_suffix}"
+            
+            logger.info(f"Trying with timestamped domain: {new_domain_name}")
+            response = cognito_client.create_user_pool_domain(
+                Domain=new_domain_name,
+                UserPoolId=user_pool_id
+            )
+            
+            domain_url = f"https://{new_domain_name}.auth.{region}.amazoncognito.com"
+            
+            return {
+                'domain': new_domain_name,
+                'domain_url': domain_url,
+                'status': 'created_with_suffix',
+                'cloudfront_domain': response.get('CloudFrontDomain', '')
+            }
+        else:
+            logger.error(f"Invalid parameter for domain creation: {e}")
+            raise
+            
+    except Exception as e:
+        logger.error(f"Error creating Cognito domain: {e}")
+        raise

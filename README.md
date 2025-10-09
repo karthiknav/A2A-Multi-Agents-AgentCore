@@ -1,6 +1,6 @@
-# Agent-to-Agent (A2A) Multi-Agent System on Amazon Bedrock AgentCore
+# Agent-to-Agent (A2A) Multi-Agent System on Amazon Bedrock AgentCore for Incident Response Logging
 
-A comprehensive implementation of the Agent-to-Agent (A2A) protocol using specialized agents running on Amazon Bedrock AgentCore runtime, demonstrating intelligent coordination for AWS infrastructure monitoring and operations management.
+A comprehensive implementation of the Agent-to-Agent (A2A) protocol using specialized agents running on Amazon Bedrock `AgentCore` runtime, demonstrating intelligent coordination for AWS infrastructure monitoring and operations management. This repository walks you through setting up three core agents to answer questions about incidents and metrics in your AWS accounts and search for best remediation strategies. A monitoring agent (built using the `Strands` Agents SDK) is responsible for handling all questions related to metrics and logs within AWS and cross AWS accounts. A remediation agent (built using `OpenAI`'s Agents SDK) is responsible to doing efficient web searches for best remediation strategies and optimization techniques that the user can ask for. Both agents run on separate runtimes as `A2A` servers and utilize all `AgentCore` primitives - memory for context management, observability for deep level analysis about both agents, gateway for access to tools (`Cloudwatch`, `JIRA` and `TAVILY` APIs) and `AgentCore` identity for enabling inbound and outbound access into the agent and then into the resources that the agent can access using OAuth 2.0 and APIs. These two agents are then managed by a host `Google ADK` agent that acts as a client and delegates tasks to each of these agents using A2A on Runtime. The Google ADK host agent runs on a separate `AgentCore` runtime of its own. 
 
 ## What is A2A?
 
@@ -57,11 +57,29 @@ AgentCore simplifies A2A agent deployment by handling infrastructure, authentica
 └────────────────────────┘                   └─────────────────────────┘
 ```
 
-## Agent Overview
+## Sequence flow
+
+![img](multi-agents/img/a2aflow.png)
+
+## Agent Overview and Steps to run
+
+### Prerequisite steps
+
+Execute the following command in your terminal to instantiate the `uv` environment and make sure you have `aws configure`d into your AWS account:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+uv venv && source .venv/bin/activate && uv pip sync pyproject.toml
+UV_PROJECT_ENVIRONMENT=.venv
+uv add zmq
+python -m ipykernel install --user --name=.venv --display-name="Python (uv env)"
+```
+
 
 ### 1. Monitoring Agent
 
-The Monitoring Agent provides comprehensive AWS infrastructure monitoring capabilities using Amazon Bedrock AgentCore runtime.
+The Monitoring Agent provides comprehensive AWS infrastructure monitoring capabilities using Amazon Bedrock `AgentCore` runtime.
 
 **Key Features:**
 - CloudWatch logs, metrics, and dashboard analysis
@@ -71,6 +89,8 @@ The Monitoring Agent provides comprehensive AWS infrastructure monitoring capabi
 - A2A protocol support for agent collaboration
 
 **[Complete Setup Guide →](./multi-agents/monitoring_agent/README.md)**
+
+![img](/multi-agents/img/monitoring_agent.png)
 
 ### 2. Ops Orchestrator Agent
 
@@ -84,6 +104,8 @@ The Ops Orchestrator Agent searches for best practices and provides infrastructu
 - A2A protocol support for agent collaboration
 
 **[Complete Setup Guide →](./multi-agents/ops_orchestrator_agent/README.md)**
+
+![img](multi-agents/img/ops_console.png)
 
 ### 3. Host Orchestrator Agent
 
@@ -99,18 +121,6 @@ The Host Orchestrator serves as an intelligent router that coordinates communica
 **[Complete Setup Guide →](./multi-agents/host/README.md)**
 
 ## Quick Start
-
-### Prerequisites
-
-- AWS Account with credentials configured
-- Python 3.11+
-- IAM permissions for:
-  - Amazon Bedrock AgentCore
-  - AWS Lambda
-  - Amazon Cognito
-  - CloudWatch
-  - IAM role creation
-  - SSM Parameter Store
 
 ### High-Level Setup Steps
 

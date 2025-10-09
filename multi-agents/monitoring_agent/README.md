@@ -1,26 +1,18 @@
 # Monitoring Agent - Complete Setup Guide
 
-This monitoring agent is built using AWS Bedrock AgentCore runtime for monitoring CloudWatch logs, metrics, dashboards, and other AWS services. This guide provides step-by-step instructions for complete setup from Lambda functions to runtime deployment.
+This monitoring agent is built using AWS Bedrock `AgentCore` runtime for monitoring CloudWatch logs, metrics, dashboards, and other AWS services. This guide provides step-by-step instructions for complete setup from Lambda functions to runtime deployment.
 
 ## Prerequisites
 
-- **AWS Account and Credentials**: Ensure AWS credentials are configured
-- **Python 3.11+**: Required for all components
-- **IAM Permissions**: Admin access or sufficient permissions for:
-  - Amazon Bedrock AgentCore
-  - AWS Lambda
-  - Amazon Cognito
-  - CloudWatch
-  - IAM role creation
-  - ECR repository creation
+Create the `uv` environment as provided in the top level `README.md` file.
 
 ## Overview
 
 The setup process consists of 4 main steps:
-1. **Lambda Tools Setup** - Deploy monitoring tools as Lambda functions
-2. **Cognito Authentication** - Set up inbound authentication
-3. **Gateway Creation** - Create AgentCore Gateway with authentication
-4. **Agent Runtime** - Deploy and test the monitoring agent
+1. **Lambda Tools Setup** - Deploy monitoring tools as Lambda functions that will sit behind AgentCore Gateway
+2. **Cognito Authentication** - Set up inbound authentication for the agent to be accessed via OAuth 2.0. We will use `Cognito` in this example but you can bring in your own agent.
+3. **Gateway Creation** - Create AgentCore Gateway with authentication. In this case, the outbound authentication is done using the IAM role that has access to cloudwatch APIs registered as tools within the gateway. 
+4. **Agent Runtime** - Deploy and test the monitoring agent. The monitoring agent is deployed as an A2A server on AgentCore Runtime. For more information on A2A server deployment on AgentCore, view this [documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-a2a.html).
 
 ## Step 1: Lambda Tools Setup
 
@@ -29,7 +21,7 @@ First, set up the Lambda functions that contain the monitoring tools the agent w
 ### 1.1 Navigate to Lambda Tools Directory
 
 ```bash
-cd tools/lambda
+cd multi-agents/monitoring_agent/tools/lambda
 ```
 
 ### 1.2 Configure Lambda Deployment
@@ -68,9 +60,15 @@ This will:
 - Package and deploy the Lambda function with monitoring tools
 - Set up necessary permissions for CloudWatch access
 
+![img](../img/lambda_deployment.png)
+
+Copy the `lambda arn` from the AWS console below:
+
+![img](../img/lambda_console.png)
+
 ## Step 2: Cognito Authentication Setup
 
-Set up Amazon Cognito for inbound authentication to the monitoring agent.
+Set up Amazon Cognito for inbound authentication to the monitoring agent. For more information on how AgentCore identity works, view the documentation [here](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/identity.html).
 
 ### 2.1 Navigate to IdP Setup Directory
 
@@ -86,6 +84,10 @@ Execute the Cognito setup script:
 python setup_cognito.py
 ```
 
+You will be able to view the output of this command below in the `idp_setup/cognito_config.json` path:
+
+![img](../img/inbound_idp.png)
+
 This will:
 - Create a Cognito User Pool
 - Set up a resource server with appropriate scopes
@@ -93,16 +95,16 @@ This will:
 - Generate a test user for authentication
 - Save configuration to `cognito_config.json`
 
-### 2.3 Record Cognito Configuration
+### 2.3 Record `Cognito` Configuration
 
 The script will output important configuration details:
 
 ```
 COGNITO SETUP COMPLETE
 ====================================
-Pool ID: us-east-1_XXXXXXXXX
+Pool ID: us-west-2_XXXXXXXXX
 Client ID: XXXXXXXXXXXXXXXXXXXXXXXXXX
-Discovery URL: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_XXXXXXXXX/.well-known/jwks.json
+Discovery URL: https://cognito-idp.us-west-2.amazonaws.com/us-west-2_XXXXXXXXX/.well-known/jwks.json
 Username: testuser
 Password: MyPassword123!
 M2M Client ID: XXXXXXXXXXXXXXXXXXXXXXXXXX
@@ -110,11 +112,11 @@ M2M Client Secret: XXXXXXXXXX...
 ====================================
 ```
 
-Save these values - you'll need them for gateway configuration.
+Save these values - you'll need them for the gateway configuration.
 
 ## Step 3: Gateway Creation
 
-Create the AgentCore Gateway that will host the monitoring tools and handle authentication.
+Create the [AgentCore Gateway](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/gateway.html) that will host the monitoring tools and handle authentication.
 
 ### 3.1 Navigate to Gateway Creation Directory
 
@@ -133,13 +135,15 @@ gateway_config:
   
   # Authentication configuration from Cognito setup
   auth_info:
-    client_id: "YOUR_COGNITO_CLIENT_ID"  # From Step 2.3
+    client_id: "YOUR_COGNITO_CLIENT_ID"  # From Step 2.3. This is the m2m client id
     discovery_url: "YOUR_COGNITO_DISCOVERY_URL"  # From Step 2.3
-  
+  # this is the name of the bucket where the target files (openapi yaml) will
+  # be uploaded from
+  bucket_name: <bucket-name>
   # Lambda target configuration
   targets:
     lambda:
-      role_arn: "arn:aws:lambda:REGION:ACCOUNT:function:MonitoringAgentLambda"  # From Step 1
+      role_arn: "<add the lambda function arn of the lambda function created from the previous step>"  # From Step 1
 ```
 
 ### 3.3 Create the Gateway
@@ -166,7 +170,11 @@ Gateway ID: gwXXXXXXXXXX
 Gateway URL: https://XXXXXXXXXX.execute-api.REGION.amazonaws.com/
 ```
 
-## Step 4: Agent Runtime Setup
+View the gateway created in the console and copy the `Gateway ID` and `Gateway MCP URL` from there. The agent will be configured to access the gateway using the gateway identity and will be able to list the tools and orchestrate requests between them.
+
+![img](../img/gateway_info.png)
+
+# Prepare pre-requites to deploy the Agent as an A2A server on AgentCore Runtime
 
 Deploy and test the monitoring agent runtime.
 
@@ -180,6 +188,8 @@ cd ..
 
 Update `config.yaml` with your setup information:
 
+1. Provide
+
 ```yaml
 agent_information:
   monitoring_agent_model_info:
@@ -191,28 +201,36 @@ agent_information:
     
     # Gateway configuration (from Step 3)
     gateway_config:
+      gateway_name: "name of your gateway"
       gateway_url: "YOUR_GATEWAY_URL"
-      gateway_auth:
-        client_id: "YOUR_COGNITO_CLIENT_ID"
-        client_secret: "YOUR_COGNITO_CLIENT_SECRET"
-        discovery_url: "YOUR_COGNITO_DISCOVERY_URL"
-      
-      # Runtime configuration
-      runtime_exec_role: "arn:aws:iam::YOUR-ACCOUNT:role/YOUR-EXECUTION-ROLE"
-      launch_agentcore_runtime: true
+
+# fetch this information from the cognito_config.json file and the console
+# this would be retrieved from SSM or Identity provider in prod.
+idp_setup:
+  user_pool_id: 
+  domain: 
+  discovery_url: 
+  client_secret: 
+  client_id: 
+  resource_server_identifier:
+  scopes:
+    - 
+    -
+
+cloudwatch_agent_resources:
+  # this is the log group name that will be used to create the log group
+  # and the log stream
+  # this should be the same as what is given in the .env file for 
+  # observability 
+  log_group_name: "" # provide this else it will be created
+  # this is the log stream name that will be used to create the log stream
+  # within the log group
+  log_stream_name: "" # provide this else it will be created
 ```
 
-### 4.3 Install Dependencies
+View an example of the domain created to fetch information from and fill it out in the config.yaml file above:
 
-```bash
-pip install -r requirements.txt
-```
-
-Or using `uv`:
-
-```bash
-uv pip install -r requirements.txt
-```
+![img](../img/domain.png)
 
 ## Running the Monitoring Agent as an A2A server
 Strands Agents supports the Agent-to-Agent (A2A) protocol, enabling seamless communication between AI agents across different platforms and implementations.
@@ -227,6 +245,8 @@ Test the agent locally in interactive mode:
 python monitoring_agent.py
 ```
 
+![img](../img/locala2a.png)
+
 This will:
 - Create a monitoring strands agent with specific tools and capabilities
 - Wrap the monitoring agent to provide the A2A protocol compatibility
@@ -235,15 +255,7 @@ This will:
 
 #### Test the A2A server locally
 
-Once you run the command above, the A2A server for the monitoring agent should be set up as follows:
-
-```bash
-✅ A2A Monitoring Agent Ready!
-📍 Endpoint: http://0.0.0.0:9000
-🏥 Health check: http://0.0.0.0:9000/ping
-```
-
-- Open another terminal and run the following command to send a request to the agent running as the A2A server:
+Open another terminal and run the following command to send a request to the agent running as the A2A server:
 
 ```bash
 curl -X POST http://0.0.0.0:9000 \-H "Content-Type: application/json" \-d '{  "jsonrpc": "2.0",  "id": "req-001",  "method": "message/send",  "params": {  "message": {  "role": "user",  "parts": [  {  "kind": "text",  "text": "What are the cloudwatch logs for lambda in my AWS account?"  }  ],  "messageId": "d0673ab9-796d-4270-9435-451912020cd1"  }  } }' | jq .
@@ -341,16 +353,7 @@ To deploy this A2A server on `AgentCore` runtime, follow the steps below:
 ```bash
 uv pip install bedrock-agentcore-starter-toolkit
 ```
-
-2. Create a new file called requirements.txt, add the following to it:
-
-```txt
-strands-agents[a2a]
-bedrock-agentcore
-strands-agents-tools
-```
-
-3. Set up Cognito user pool for authentication: In this case, we will be re-using the OAuth information of the agent from the `multi-agents/monitoring_agent/idp_setup` step. To configure your own IdP information to enable OAuth with the agent running on Runtime, see [Set up Cognito user pool for authentication](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-mcp.html#set-up-cognito-user-pool-for-authentication) in the documentation. This provides the OAuth tokens required for secure access to your deployed server.
+2. Set up Cognito user pool for authentication: In this case, we will be re-using the OAuth information of the agent from the `multi-agents/monitoring_agent/idp_setup` step. To configure your own IdP information to enable OAuth with the agent running on Runtime, see [Set up Cognito user pool for authentication](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/runtime-mcp.html#set-up-cognito-user-pool-for-authentication) in the documentation. This provides the OAuth tokens required for secure access to your deployed server.
 
 4. **Configure your A2A server for deployment**
 

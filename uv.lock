@@ -34,7 +34,7 @@ requires-dist = [
     { name = "a2a-sdk", specifier = ">=0.3.2" },
     { name = "aws-opentelemetry-distro", specifier = "==0.10.0" },
     { name = "bedrock-agentcore" },
-    { name = "bedrock-agentcore-starter-toolkit", specifier = "==0.1.20" },
+    { name = "bedrock-agentcore-starter-toolkit", specifier = "==0.1.21" },
     { name = "boto3" },
     { name = "botocore" },
     { name = "duckduckgo-search" },
@@ -275,7 +275,7 @@ wheels = [
 
 [[package]]
 name = "bedrock-agentcore-starter-toolkit"
-version = "0.1.20"
+version = "0.1.21"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "autopep8" },
@@ -301,9 +301,9 @@ dependencies = [
     { name = "urllib3" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ee/c2/1bf109626509e71558e2aa4a1c636725f04593f693cb8fbff987849140cf/bedrock_agentcore_starter_toolkit-0.1.20.tar.gz", hash = "sha256:adc2a85b54b221ed9261c5453a429d8153c6f9735a2b678277a607e029196c9f", size = 511025, upload-time = "2025-10-08T15:33:11.976Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/98/f084aaaf63ef004a9a319a6094b2bbacc4a3c67ea5130a63387c1a47b584/bedrock_agentcore_starter_toolkit-0.1.21.tar.gz", hash = "sha256:4ca53459403f07259a1fddbee5fd2f9d5d287d316fa720958f9136054bf0e62a", size = 511063, upload-time = "2025-10-08T20:44:47.171Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fd/ca/61f11cdb6ef53bdba7f9a41f7fc0b55b72771e7f266d2f66ca929d9ee275/bedrock_agentcore_starter_toolkit-0.1.20-py3-none-any.whl", hash = "sha256:dc1f88b5c43efe6f10e0cc876216f76e9e80b754291eedba85215c39082cb69e", size = 190107, upload-time = "2025-10-08T15:33:10.748Z" },
+    { url = "https://files.pythonhosted.org/packages/58/9b/cc37602e35a8c66d1773fcf1af72739e2ef86ed090694a9cbbf3bb1d7689/bedrock_agentcore_starter_toolkit-0.1.21-py3-none-any.whl", hash = "sha256:1049b619829cc781fb1e893f125ec9dc02d28c6380478049cba3fffaf29174b9", size = 190116, upload-time = "2025-10-08T20:44:45.66Z" },
 ]
 
 [[package]]

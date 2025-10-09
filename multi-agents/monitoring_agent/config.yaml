@@ -21,17 +21,17 @@ agent_information:
       max_tokens: 2048
     # MEMORY CONFIGURATION FOR THE MONITORING AGENT
     # If your memory is already created, please provide the credentials here
-    use_existing_memory: yes
+    use_existing_memory: no
     memory_credentials:
       # fetch this from your AWS console
-      id: MonitoringAgentGWNew_memory_1759785717-D8LIGl6Grj
-    memory_execution_role: arn:aws:iam::218208277580:role/memrole
+      id: 
+    memory_execution_role: <provide a memory execution role>
     memory_allocation:
       # An actor refers to an entity such as an end user or an agent that interacts with the
       # agent application. For example, in a coding use case, an actor is a developer asking
       # questions to the assistant. Using the actor id helps the system know which user the 
       # memory belongs to, keeping each user's data separate and organized
-      actor_id: actor_agent_madhur2039
+      actor_id: monitoring_actor_agent2039
       # The session is usually a single conversation that is the interaction period between
       # the user and the AI agent
       # A namespace is used to logically group and organize the long term memories, these will
@@ -39,29 +39,23 @@ agent_information:
     # GATEWAY CONFIGURATION FOR THE MONITORING AGENT
     gateway_config:
       # Run the steps in the gateway_creation folder to input the parameters below
-      name: monitoring-GW
-      url: https://monitoring-gw-3wuqmueqll.gateway.bedrock-agentcore.us-west-2.amazonaws.com/mcp
-    # This is if the agent is already configured and needs to be invokeds
-    agent_arn: 
-    # set this to false if the agent arn is provided from above
-    launch_agentcore_runtime: true
-    # this is the runtime execution role for the agent that will be used 
-    runtime_exec_role: arn:aws:iam::218208277580:role/service-role/Amazon-Bedrock-IAM-Role-20240102T112809
-      
+      name: <gateway name from the console>
+      url: <gateway url from the console>
+
 # Identity Provider (IdP) setup configuration for prerequisite setup
 # after running the setup idp scripts, you will find a cognito config.json
 # to get the values from that you can input below. This can be done through
 # cognito or even through another IdP
 idp_setup:
-  user_pool_id: 
-  domain: 
-  discovery_url: 
-  client_secret: 
-  client_id: 
-  resource_server_identifier: 
+  user_pool_id: # From cognito but preferrably from SSM/Identity provider or some token vault in production
+  domain: # From cognito but preferrably from SSM/Identity provider or some token vault in production
+  discovery_url: # From cognito but preferrably from SSM/Identity provider or some token vault in production
+  client_secret: # From cognito but preferrably from SSM/Identity provider or some token vault in production
+  client_id: # From cognito but preferrably from SSM/Identity provider or some token vault in production
+  resource_server_identifier: # From cognito but preferrably from SSM/Identity provider or some token vault in production
   scopes:
-    - 
-    - 
+    -  # From cognito but preferrably from SSM/Identity provider or some token vault in production
+    -  # From cognito but preferrably from SSM/Identity provider or some token vault in production
 
 
 # this is information about the cloudwatch related tools that will be used

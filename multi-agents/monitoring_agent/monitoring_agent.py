@@ -402,8 +402,18 @@ port = int(os.environ.get('PORT', 9000))
 
 print(f"🚀 Initializing Monitoring Agent with A2A server...")
 
-# Initialize agent within MCP context
-with mcp_client:
+# Module-level variables for agent and app (will be initialized in main)
+monitoring_agent = None
+fastapi_app = None
+gateway_tools = None
+
+def initialize_agent_and_server():
+    """
+    Initialize the monitoring agent and A2A server.
+    This must be called within the MCP client context manager.
+    """
+    global monitoring_agent, fastapi_app, gateway_tools
+
     # List tools from gateway
     gateway_tools = mcp_client.list_tools_sync()
     print(f"✅ Loaded {len(gateway_tools)} tools from Gateway")
@@ -411,7 +421,7 @@ with mcp_client:
     # Create monitoring agent with MCP tools and hooks
     hooks = [monitoring_hooks]
     monitoring_agent = Agent(
-        # The name of the agent and the description of the agent are mandatory 
+        # The name of the agent and the description of the agent are mandatory
         # fields to get started with creating an agent card through using this file
         # to instantiate an A2A server
         name="monitoring_agent",
@@ -450,22 +460,32 @@ with mcp_client:
 
     # Mount A2A server to FastAPI app
     fastapi_app = a2a_server.to_fastapi_app()
-    starlette_app = a2a_server.to_starlette_app()
     print(f"✅ A2A Monitoring Agent Ready!")
     print(f"📍 Endpoint: http://{host}:{port}")
     print(f"🏥 Health check: http://{host}:{port}/ping")
+
+    return fastapi_app
 
 # ────────────────────────────────────────────────────────────────────────────────────
 # RUN A2A SERVER
 # ────────────────────────────────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
-    # The MCP context is maintained through the server lifecycle
-    # The app variable is already defined in the module scope above
+def run_server():
+    """
+    Run the A2A server within the MCP client context manager.
+    This ensures the MCP client session remains active during the entire server lifecycle.
+    """
     print(f"\n🚀 Starting A2A Monitoring Agent Server")
     print(f"📍 Endpoint: http://{host}:{port}")
     print(f"🏥 Health check: http://{host}:{port}/ping")
     print(f"📋 Session ID: {session_id}\n")
 
-    # Run uvicorn server
-    uvicorn.run(fastapi_app, host=host, port=port)
+    # Initialize agent and server within MCP context
+    with mcp_client:
+        app = initialize_agent_and_server()
+
+        # Run uvicorn server - the MCP context will remain active
+        uvicorn.run(app, host=host, port=port)
+
+if __name__ == "__main__":
+    run_server()

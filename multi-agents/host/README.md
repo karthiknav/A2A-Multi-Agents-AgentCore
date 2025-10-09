@@ -29,13 +29,13 @@ The host agent serves as an orchestrator that:
 
 ## Prerequisites
 
-- Python 3.11+
-- AWS credentials configured with permissions for:
-  - SSM Parameter Store (read access)
-  - Cognito (token generation)
-- Amazon Bedrock AgentCore runtime agents deployed
-- Google ADK installed (`google-adk`)
-- A2A client library installed (`a2a`)
+1. **Google AI API Key** - Required for Google Gemini model access
+   - Get your API key from: https://aistudio.google.com/app/apikey
+   - Copy `.env.template` to `.env` and add your API key:
+     ```bash
+     cp .env.template .env
+     # Edit .env and add your GOOGLE_API_KEY
+     ```
 
 ## Setup
 
@@ -49,10 +49,11 @@ aws ssm put-parameter \
   --name "/a2a/agents/monitoring/idp-config" \
   --type "SecureString" \
   --value '{
-    "user_pool_id": "us-west-2_XXXXX",
-    "client_id": "your-client-id",
-    "client_secret": "your-client-secret",
-    "discovery_url": "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_XXXXX/.well-known/openid-configuration",
+    "user_pool_id": "",
+    "client_id": "",
+    "client_secret": "",
+    "domain": "",
+    "discovery_url": "https://cognito-idp.us-west-2.amazonaws.com//.well-known/openid-configuration",
     "resource_server_identifier": "monitoring-agentcore-gateway-id",
     "scopes": ["gateway:read", "gateway:write"]
   }' \
@@ -64,10 +65,11 @@ aws ssm put-parameter \
   --name "/a2a/agents/ops-remediation/idp-config" \
   --type "SecureString" \
   --value '{
-    "user_pool_id": "us-west-2_YYYYY",
-    "client_id": "your-client-id",
-    "client_secret": "your-client-secret",
-    "discovery_url": "https://cognito-idp.us-west-2.amazonaws.com/us-west-2_YYYYY/.well-known/openid-configuration",
+    "user_pool_id": "",
+    "client_id": "",
+    "client_secret": "",
+    "domain": "",
+    "discovery_url": "https://cognito-idp.us-west-2.amazonaws.com//.well-known/openid-configuration",
     "resource_server_identifier": "operations-agentcore-gateway-id",
     "scopes": ["gateway:read", "gateway:write"]
   }' \
@@ -91,13 +93,13 @@ model:
 agents:
   - name: Monitoring_Agent
     description: "Monitors AWS logs/metrics/dashboards, performs log analysis, manages CloudWatch alarms, and creates Jira tickets"
-    runtime_arn: arn:aws:bedrock-agentcore:us-west-2:218208277580:runtime/monitoring_agent-82VNVEAjzF
+    runtime_arn: <provide the runtime arn>
     region: us-west-2
     ssm_idp_config_path: /a2a/agents/monitoring/idp-config
 
   - name: OpsRemediation_Agent
     description: "Searches for remediation strategies using web search and provides solutions for AWS-related issues"
-    runtime_arn: arn:aws:bedrock-agentcore:us-west-2:218208277580:runtime/ops_remediation_agent-IA6DtAEQ4Z
+    runtime_arn: <provide the runtime arn>
     region: us-west-2
     ssm_idp_config_path: /a2a/agents/ops-remediation/idp-config
 ```

@@ -288,6 +288,20 @@ def create_agentcore_role(agent_name):
                 "Resource": "*"
             },
             {
+                "Sid": "MemoryAccess",
+                "Effect": "Allow",
+                "Action": [
+                    "bedrock-agentcore:GetMemory",
+                    "bedrock-agentcore:PutMemory",
+                    "bedrock-agentcore:DeleteMemory",
+                    "bedrock-agentcore:ListMemories",
+                    "bedrock-agentcore:QueryMemory"
+                ],
+                "Resource": [
+                    f"arn:aws:bedrock-agentcore:{region}:{account_id}:memory/*"
+                ]
+            },
+            {
                 "Sid": "GetAgentAccessToken",
                 "Effect": "Allow",
                 "Action": [
@@ -347,8 +361,8 @@ def create_agentcore_role(agent_name):
         except iam_client.exceptions.EntityAlreadyExistsException:
             print("Role already exists -- deleting and creating it again")
             policies = iam_client.list_role_policies(
-            RoleName=agentcore_role_name,
-            MaxItems=100
+                RoleName=agentcore_role_name,
+                MaxItems=100
             )
             print("policies:", policies)
             for policy_name in policies['PolicyNames']:
@@ -448,29 +462,29 @@ def create_agentcore_gateway_role(gateway_name):
             time.sleep(10)
         except iam_client.exceptions.EntityAlreadyExistsException:
             print("Role already exists -- deleting and creating it again")
-        try:
-            policies = iam_client.list_role_policies(
-                RoleName=agentcore_gateway_role_name,
-                MaxItems=100
+            try:
+                policies = iam_client.list_role_policies(
+                    RoleName=agentcore_gateway_role_name,
+                    MaxItems=100
+                )
+            except iam_client.exceptions.NoSuchEntityException:
+                print(f"Role {agentcore_gateway_role_name} not found during cleanup")
+                policies = {'PolicyNames': []}
+            print("policies:", policies)
+            for policy_name in policies['PolicyNames']:
+                iam_client.delete_role_policy(
+                    RoleName=agentcore_gateway_role_name,
+                    PolicyName=policy_name
+                )
+            print(f"deleting {agentcore_gateway_role_name}")
+            iam_client.delete_role(
+                RoleName=agentcore_gateway_role_name
             )
-        except iam_client.exceptions.NoSuchEntityException:
-            print(f"Role {agentcore_gateway_role_name} not found during cleanup")
-            policies = {'PolicyNames': []}
-        print("policies:", policies)
-        for policy_name in policies['PolicyNames']:
-            iam_client.delete_role_policy(
+            print(f"recreating {agentcore_gateway_role_name}")
+            agentcore_iam_role = iam_client.create_role(
                 RoleName=agentcore_gateway_role_name,
-                PolicyName=policy_name
+                AssumeRolePolicyDocument=assume_role_policy_document_json
             )
-        print(f"deleting {agentcore_gateway_role_name}")
-        iam_client.delete_role(
-            RoleName=agentcore_gateway_role_name
-        )
-        print(f"recreating {agentcore_gateway_role_name}")
-        agentcore_iam_role = iam_client.create_role(
-            RoleName=agentcore_gateway_role_name,
-            AssumeRolePolicyDocument=assume_role_policy_document_json
-        )
 
     # Attach the AWSLambdaBasicExecutionRole policy
     print(f"attaching role policy {agentcore_gateway_role_name}")
