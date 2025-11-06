@@ -61,6 +61,78 @@ AgentCore simplifies A2A agent deployment by handling infrastructure, authentica
 
 ![img](multi-agents/img/a2aflow.png)
 
+## Host Agent Call Flow
+
+The following diagram shows the detailed call flow when using the Host Orchestrator Agent:
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│ User Program│    │ Host Agent  │    │ Gemini LLM  │    │Remote Agent │    │AWS Services │
+└──────┬──────┘    └──────┬──────┘    └──────┬──────┘    └──────┬──────┘    └──────┬──────┘
+       │                  │                  │                  │                  │
+   1.  │ HostAgent.create()│                  │                  │                  │
+       ├─────────────────►│                  │                  │                  │
+   2.  │                  │ fetch SSM params │                  │                  │
+       │                  ├─────────────────────────────────────────────────────►│
+   3.  │                  │ get OAuth tokens │                  │                  │
+       │                  ├─────────────────────────────────────────────────────►│
+   4.  │                  │ discover agents  │                  │                  │
+       │                  ├─────────────────────────────────────►│                  │
+   5.  │ stream("Check CloudWatch")           │                  │                  │
+       ├─────────────────►│                  │                  │                  │
+   6.  │                  │ analyze query    │                  │                  │
+       │                  ├─────────────────►│                  │                  │
+   7.  │                  │ decide: contact Monitoring_Agent    │                  │
+       │                  │◄─────────────────┤                  │                  │
+   8.  │                  │ send_message_to_agent()             │                  │
+       │                  ├─────────────────────────────────────►│                  │
+   9.  │                  │                  │                  │ query CloudWatch │
+       │                  │                  │                  ├─────────────────►│
+  10.  │                  │                  │                  │ CloudWatch data  │
+       │                  │                  │                  │◄─────────────────┤
+  11.  │                  │ A2A response     │                  │                  │
+       │                  │◄─────────────────────────────────────┤                  │
+  12.  │                  │ process response │                  │                  │
+       │                  ├─────────────────►│                  │                  │
+  13.  │                  │ formatted results│                  │                  │
+       │                  │◄─────────────────┤                  │                  │
+  14.  │ stream events    │                  │                  │                  │
+       │◄─────────────────┤                  │                  │                  │
+  15.  │ host_agent.close()│                  │                  │                  │
+       ├─────────────────►│                  │                  │                  │
+```
+
+### Call Flow Phases:
+
+**1. Initialization Phase (Steps 1-4)**
+- `HostAgent.create()` initializes the orchestrator
+- Fetches OAuth credentials from AWS SSM Parameter Store
+- Obtains bearer tokens from AWS Cognito
+- Discovers remote agents via A2A protocol and agent cards
+
+**2. Query Processing Phase (Steps 5-8)**
+- User sends query via `stream()` method
+- Google Gemini LLM analyzes the query
+- LLM decides which specialist agent to contact
+- Host agent prepares A2A message
+
+**3. A2A Communication Phase (Steps 9-13)**
+- Host sends JSON-RPC 2.0 message to remote agent
+- Remote agent queries AWS services (CloudWatch, etc.)
+- Remote agent returns structured response
+- Host processes and formats the response
+
+**4. Response & Cleanup Phase (Steps 14-15)**
+- Host streams events back to user program
+- Resources are cleaned up when done
+
+### Key Technologies:
+- **Google ADK + Gemini**: Powers the intelligent orchestration
+- **A2A Protocol**: Standardized agent-to-agent communication
+- **OAuth 2.0**: Secure authentication via AWS Cognito
+- **JSON-RPC 2.0**: Message format for inter-agent communication
+- **AWS SSM**: Secure parameter storage for configuration
+
 ## Agent Overview and Steps to run
 
 ### Prerequisite steps
@@ -70,7 +142,9 @@ Execute the following command in your terminal to instantiate the `uv` environme
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
-uv venv && source .venv/bin/activate && uv pip sync pyproject.toml
+uv venv 
+source .venv/bin/activate (source .venv/Scripts/activate)
+uv pip sync pyproject.toml
 UV_PROJECT_ENVIRONMENT=.venv
 uv add zmq
 python -m ipykernel install --user --name=.venv --display-name="Python (uv env)"

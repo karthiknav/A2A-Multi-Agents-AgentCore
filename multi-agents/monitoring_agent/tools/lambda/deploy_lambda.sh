@@ -9,7 +9,7 @@ set -Eeuo pipefail
 
 # --- Config / Args ---
 FUNCTION_NAME="${1:-monitoring-agent-fn-new}"
-REGION="${2:-us-west-2}"            # must match where your function lives
+REGION="${2:-us-east-1}"            # must match where your function lives
 RUNTIME="python3.11"                # your code uses requests; 3.11 is widely available
 ROLE_NAME="MonitoringLambdaRole"
 MAX_RETRIES=5
@@ -69,8 +69,8 @@ EOF
 
 echo "📥 Installing dependencies..."
 pushd "$DEPLOY_DIR" >/dev/null
-python3 -m pip install --upgrade pip --quiet
-python3 -m pip install -r requirements.txt -t . --quiet
+python -m pip install --upgrade pip --quiet
+python -m pip install -r requirements.txt -t . --quiet
 
 # --- Zip package ---
 echo "📦 Creating deployment package..."

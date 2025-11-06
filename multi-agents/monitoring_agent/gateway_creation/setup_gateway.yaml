@@ -6,7 +6,7 @@ gateway_config:
   name: "monitoring-gateway"
   # this is the name of the bucket where the target files (openapi or smithy) will
   # be uploaded from
-  bucket_name: <your bucket name>
+  bucket_name: "nav-agentcore-demo-bucket"
   # this is the description of the agent gateway
   description: "AgentCore Gateway for the monitoring agent"
   # protocol type is MCP
@@ -26,11 +26,11 @@ gateway_config:
     # after that run the deploy lambda script: ./deploy_lambda.sh
     lambda:
       function_name: "monitoring-agent"
-      role_arn: <your function arn>
+      role_arn: "arn:aws:lambda:us-east-1:206409480438:function:monitoring-agent-fn-new"
       config_struct: tools/lambda_monitoring_tools.json
   # Fetch this information from the idp_setup/cognito_config.json after running the 
   # cognito script. If not, then provide this information from your IdP of choice
   auth_info:
     # this information in production would be stored in some token vault or agentcore identity for that matter
-    discovery_url: <discovery url>
-    client_id: <m2m client id> # this is the m2m client id
+    discovery_url: https://cognito-idp.us-east-1.amazonaws.com/us-east-1_4Oz8sbLsU/.well-known/openid-configuration
+    client_id: kgb9gmbg886hgb50ti14rq966 # this is the m2m client id

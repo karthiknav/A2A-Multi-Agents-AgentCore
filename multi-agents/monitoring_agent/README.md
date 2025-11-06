@@ -71,7 +71,6 @@ Copy the `lambda arn` from the AWS console below:
 Set up Amazon Cognito for inbound authentication to the monitoring agent. For more information on how AgentCore identity works, view the documentation [here](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/identity.html).
 
 ### 2.1 Navigate to IdP Setup Directory
-
 ```bash
 cd ../../idp_setup
 ```

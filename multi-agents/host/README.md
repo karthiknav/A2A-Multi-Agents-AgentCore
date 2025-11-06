@@ -280,3 +280,8 @@ agents:
     region: us-west-2
     ssm_idp_config_path: /a2a/agents/my-agent/idp-config
 ```
+
+![alt text](image.png)
+![alt text](image-1.png)
+![alt text](image-2.png)
+![alt text](image-3.png)

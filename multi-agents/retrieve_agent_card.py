@@ -31,6 +31,7 @@ def get_bearer_token_from_config(
             return None
 
     # Load config
+
     config_data = load_config(config_path)
     if not config_data:
         print(f"❌ Failed to load {config_path}")
@@ -92,7 +93,7 @@ def fetch_agent_card(
     agent_arn: Optional[str] = None,
     bearer_token: Optional[str] = None,
     config_path: Optional[str] = None,
-    region: str = "us-west-2"
+    region: str = "us-east-1"
 ) -> Optional[Dict]:
     """
     Fetch agent card from Amazon Bedrock AgentCore.

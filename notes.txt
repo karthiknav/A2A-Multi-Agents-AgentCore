@@ -1,0 +1,50 @@
+The two agents use fundamentally different tool architectures:
+
+Tool Architecture Comparison
+Monitoring Agent (Gateway-Based Tools)
+----------------------------------------
+# Uses MCP (Model Context Protocol) Gateway
+from strands.tools.mcp.mcp_client import MCPClient
+from mcp.client.streamable_http import streamablehttp_client
+
+# Tools accessed through authenticated gateway
+mcp_client = MCPClient(create_streamable_http_transport)
+gateway_tools = mcp_client.list_tools_sync()
+
+# Agent gets tools from gateway
+monitoring_agent = Agent(
+    tools=gateway_tools,  # Remote tools via gateway
+    model=bedrock_model
+)
+
+
+Ops Orchestrator Agent (Direct Tools)
+--------------------------------------
+# Direct function tools
+from agents import function_tool
+
+@function_tool
+async def web_search_impl(query: str):
+    # Direct API call to Tavily
+    client = TavilyClient(api_key=TAVILY_API_KEY)
+    return client.search(query)
+
+# Agent gets local function tools
+orchestrator = Agent(
+    tools=[web_search_impl, *memory_tools],  # Local functions
+    model="gpt-4o"
+)
+
+
+
+Tool Flow Comparison
+Monitoring Agent:
+------------------
+User → Agent → Gateway (OAuth) → AWS CloudWatch API → Response
+
+
+Ops Orchestrator:
+-----------------------
+User → Agent → Direct Function → Tavily API → Response
+
+The gateway approach is more enterprise-ready but complex, while direct tools are simpler but require individual API key management.

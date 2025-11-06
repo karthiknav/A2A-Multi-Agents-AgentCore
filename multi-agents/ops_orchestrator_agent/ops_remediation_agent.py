@@ -349,9 +349,10 @@ from tavily import TavilyClient
 # Use the global variable set earlier
 
 @function_tool
-async def web_search_impl(query: str, top_k: int = 5, recency_days: int | None = None):
+async def web_search_impl(query: str, top_k: int = 3, recency_days: int | None = None):
     """
     Uses Tavily's search API to return top web results with snippets.
+    Limited to reduce OpenAI token usage.
     """
     if not TAVILY_API_KEY:
         raise RuntimeError("Missing TAVILY_API_KEY env var")
@@ -359,7 +360,7 @@ async def web_search_impl(query: str, top_k: int = 5, recency_days: int | None =
     client = TavilyClient(api_key=TAVILY_API_KEY)
     search_kwargs = {
         "query": query,
-        "max_results": max(1, min(top_k, 10)),
+        "max_results": max(1, min(top_k, 3)),  # Limit to max 3 results
         "include_domains": None,
         "exclude_domains": None,
     }
@@ -377,12 +378,22 @@ async def web_search_impl(query: str, top_k: int = 5, recency_days: int | None =
     res = client.search(**search_kwargs)
     results = []
     for item in res.get("results", []):
+        # Truncate snippet to max 50 characters to reduce token usage
+        snippet = item.get("content") or item.get("snippet") or ""
+        truncated_snippet = snippet[:50] + "..." if len(snippet) > 50 else snippet
+        
         results.append({
-            "title": item.get("title"),
-            "url": item.get("url"),
-            "snippet": item.get("content") or item.get("snippet"),
+            "title": item.get("title", "")[:50],  # Limit title to 50 chars
+            "url": item.get("url", ""),
+            "snippet": truncated_snippet,
             "score": item.get("score"),
         })
+    
+    # Print results to debug token usage
+    print(f"🔍 Web search results for '{query}': {len(results)} results")
+    total_chars = sum(len(str(r['title']) + r['snippet']) for r in results)
+    print(f"📊 Total characters in results: {total_chars} (~{total_chars * 1.3:.0f} tokens)")
+    
     return {"results": results, "provider": "tavily", "query": query}
 
 @function_tool
@@ -432,7 +443,9 @@ async def create_lead_orchestrator_agent(memory_tools: list):
         name="Ops_Orchestrator",
         instructions=OPS_ORCHESTRATOR_AGENT_SYSTEM_PROMPT,  # Use your existing prompt
         model=config_data['agent_information']['ops_orchestrator_agent_model_info'].get('model_id'),
-        tools=agent_tools
+        tools=agent_tools,
+        # Limit response to approximately 500 words (650 tokens)
+        #model_override={"max_tokens": 650}
     )
     print(f"✅ Orchestrator Agent created with local tools: {len(agent_tools)} total tools")
     return orchestrator
