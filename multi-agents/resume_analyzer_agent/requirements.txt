@@ -1,0 +1,7 @@
+bedrock-agentcore
+pydantic
+PyPDF2
+python-docx
+strands-agents
+boto3
+pathlib

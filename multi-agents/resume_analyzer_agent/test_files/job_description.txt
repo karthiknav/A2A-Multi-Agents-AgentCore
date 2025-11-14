@@ -1,0 +1,36 @@
+Software Engineer - AI/ML Team
+
+Company: TechCorp Inc.
+Location: Remote
+Experience: 3-5 years
+
+Job Description:
+We are seeking a talented Software Engineer to join our AI/ML team. The ideal candidate will have experience in Python programming, machine learning frameworks, and cloud technologies.
+
+Required Skills:
+- Python programming (3+ years)
+- Machine Learning frameworks (TensorFlow, PyTorch)
+- Cloud platforms (AWS, Azure, or GCP)
+- SQL databases
+- Git version control
+- Bachelor's degree in Computer Science or related field
+
+Preferred Skills:
+- Docker containerization
+- Kubernetes orchestration
+- REST API development
+- Agile development methodologies
+- Experience with large-scale data processing
+
+Responsibilities:
+- Develop and maintain ML models and pipelines
+- Collaborate with data scientists and engineers
+- Deploy models to production environments
+- Write clean, maintainable code
+- Participate in code reviews and team meetings
+
+Benefits:
+- Competitive salary
+- Health insurance
+- Remote work flexibility
+- Professional development opportunities
