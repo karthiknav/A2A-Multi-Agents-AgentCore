@@ -6,6 +6,8 @@ from typing import Dict, Iterator, List
 import warnings
 import os
 import pdb
+import tempfile
+from datetime import datetime
 
 # Suppress Streamlit warnings when running in debug mode
 warnings.filterwarnings("ignore", message=".*ScriptRunContext.*")
@@ -511,12 +513,37 @@ def invoke_agent_streaming(
         yield f"Error invoking agent: {e}"
 
 
+def upload_to_s3(file_obj, bucket: str, key: str, region: str = "us-east-1") -> bool:
+    """Upload file object to S3"""
+    try:
+        s3_client = boto3.client('s3', region_name=region)
+        s3_client.upload_fileobj(file_obj, bucket, key)
+        return True
+    except Exception as e:
+        st.error(f"Failed to upload {key}: {str(e)}")
+        return False
+
+def upload_text_to_s3(text: str, bucket: str, key: str, region: str = "us-east-1") -> bool:
+    """Upload text content to S3"""
+    try:
+        s3_client = boto3.client('s3', region_name=region)
+        s3_client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=text.encode('utf-8'),
+            ContentType='text/plain'
+        )
+        return True
+    except Exception as e:
+        st.error(f"Failed to upload {key}: {str(e)}")
+        return False
+
 def main():
     # Check if logo file exists, otherwise skip
     logo_path = "static/agentcore-service-icon.png"
     if os.path.exists(logo_path):
         st.logo(logo_path, size="large")
-    st.title("Amazon Bedrock AgentCore Chat")
+    st.title("🤖 Amazon Bedrock AgentCore - HR Resume Analyzer")
 
     # Sidebar for settings
     with st.sidebar:
@@ -682,8 +709,10 @@ def main():
 
         # Connection status
         st.divider()
+        st.markdown("**📊 Status**")
         if agent_arn:
             st.success("✅ Agent selected and ready")
+            st.info(f"🪣 S3 Bucket: hr-agents-documents-agentcore")
         else:
             st.error("❌ Please select an agent")
 
@@ -697,84 +726,158 @@ def main():
             st.markdown(message["content"])
 
     # HR Agent specific inputs
-    st.subheader("HR Resume Analysis")
+    st.subheader("📄 HR Resume Analysis")
     
+    # Fixed S3 bucket
+    bucket_name = "amzn-s3-resume-analyzer-bucket"
+    
+    # File upload section
     col1, col2 = st.columns(2)
+    
     with col1:
-        bucket_name = st.text_input("S3 Bucket", value="hr-agents-documents-agentcore")
-        resume_key = st.text_input("Resume S3 Key", placeholder="resumes/candidate_resume.pdf")
-    
+        st.markdown("**📎 Upload Resume**")
+        resume_file = st.file_uploader(
+            "Choose resume file",
+            type=['pdf', 'doc', 'docx', 'txt'],
+            help="Upload resume in PDF, DOC, DOCX, or TXT format"
+        )
+        
     with col2:
-        job_desc_key = st.text_input("Job Description S3 Key (Optional)", placeholder="jobs/job_description.txt")
+        st.markdown("**📋 Job Description**")
+        job_input_method = st.radio(
+            "Choose input method:",
+            ["Upload file", "Type text"],
+            horizontal=True
+        )
+        
+        if job_input_method == "Upload file":
+            job_file = st.file_uploader(
+                "Choose job description file",
+                type=['pdf', 'doc', 'docx', 'txt'],
+                help="Upload job description file"
+            )
+            job_text = None
+        else:
+            job_file = None
+            job_text = st.text_area(
+                "Job Description",
+                height=200,
+                placeholder="Paste or type the job description here..."
+            )
     
-    if st.button("Analyze Resume", disabled=not agent_arn or not resume_key):
+    # Analysis button
+    can_analyze = agent_arn and resume_file and (job_file or job_text)
+    
+    if st.button("🔍 Analyze Resume", disabled=not can_analyze):
         if not agent_arn:
             st.error("Please select an agent in the sidebar first.")
             return
-        if not resume_key:
-            st.error("Please provide a resume S3 key.")
+        if not resume_file:
+            st.error("Please upload a resume file.")
+            return
+        if not job_file and not job_text:
+            st.error("Please provide job description (upload file or type text).")
             return
             
-        # Create analysis request
-        analysis_request = f"Analyze resume: {resume_key}"
-        
-        # Add to chat history
-        st.session_state.messages.append(
-            {"role": "user", "content": analysis_request, "avatar": HUMAN_AVATAR}
-        )
-        
-        # Process the analysis
-        with st.chat_message("assistant", avatar=AI_AVATAR):
-            message_placeholder = st.empty()
-            chunk_buffer = ""
-
-            try:
-                # Get complete response from HR agent
-                full_response = invoke_hr_agent_streaming(
+        try:
+            with st.spinner("📤 Uploading files to S3..."):
+                s3_client = boto3.client('s3', region_name=region)
+                
+                # Upload resume
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                resume_key = f"resumes/{timestamp}_{resume_file.name}"
+                
+                s3_client.upload_fileobj(
+                    resume_file,
                     bucket_name,
-                    resume_key,
-                    job_desc_key,
-                    agent_arn,
-                    st.session_state.runtime_session_id,
-                    region,
-                    show_tools,
+                    resume_key
                 )
+                st.success(f"✅ Resume uploaded: {resume_key}")
                 
-                # Handle generator response
-                if hasattr(full_response, '__iter__') and not isinstance(full_response, str):
-                    # It's a generator, collect all chunks
-                    chunks = []
-                    for chunk in full_response:
-                        if isinstance(chunk, str):
-                            chunks.append(chunk)
-                        else:
-                            chunks.append(str(chunk))
-                    full_response = ''.join(chunks)
-                    # Clean up quotes
-                    full_response = re.sub(r'^"', '', full_response)
-                    full_response = re.sub(r'"$', '', full_response)
-                    full_response = full_response.replace('""', '')
-                elif not isinstance(full_response, str):
-                    full_response = str(full_response)
-                
-                if auto_format:
-                    full_response = clean_response_text(full_response, show_thinking)
+                # Handle job description
+                job_desc_key = None
+                if job_file:
+                    job_desc_key = f"jobs/{timestamp}_{job_file.name}"
+                    s3_client.upload_fileobj(
+                        job_file,
+                        bucket_name,
+                        job_desc_key
+                    )
+                    st.success(f"✅ Job description uploaded: {job_desc_key}")
+                elif job_text:
+                    job_desc_key = f"jobs/{timestamp}_job_description.txt"
+                    s3_client.put_object(
+                        Bucket=bucket_name,
+                        Key=job_desc_key,
+                        Body=job_text.encode('utf-8'),
+                        ContentType='text/plain'
+                    )
+                    st.success(f"✅ Job description saved: {job_desc_key}")
+            
+            # Create analysis request
+            analysis_request = f"Analyzing resume: {resume_file.name}"
+            
+            # Add to chat history
+            st.session_state.messages.append(
+                {"role": "user", "content": analysis_request, "avatar": HUMAN_AVATAR}
+            )
+            
+            # Process the analysis
+            with st.chat_message("assistant", avatar=AI_AVATAR):
+                message_placeholder = st.empty()
+                chunk_buffer = ""
 
-                message_placeholder.markdown(full_response)
+                try:
+                    with st.spinner("🤖 Analyzing with multiple tools..."):
+                        # Get complete response from HR agent
+                        full_response = invoke_hr_agent_streaming(
+                            bucket_name,
+                            resume_key,
+                            job_desc_key,
+                            agent_arn,
+                            st.session_state.runtime_session_id,
+                            region,
+                            show_tools,
+                        )
+                        
+                        # Handle generator response
+                        if hasattr(full_response, '__iter__') and not isinstance(full_response, str):
+                            # It's a generator, collect all chunks
+                            chunks = []
+                            for chunk in full_response:
+                                if isinstance(chunk, str):
+                                    chunks.append(chunk)
+                                else:
+                                    chunks.append(str(chunk))
+                            full_response = ''.join(chunks)
+                            # Clean up quotes
+                            full_response = re.sub(r'^"', '', full_response)
+                            full_response = re.sub(r'"$', '', full_response)
+                            full_response = full_response.replace('""', '')
+                        elif not isinstance(full_response, str):
+                            full_response = str(full_response)
+                        
+                        if auto_format:
+                            full_response = clean_response_text(full_response, show_thinking)
 
-                if show_raw and auto_format:
-                    with st.expander("View raw response"):
-                        st.text(full_response)
+                        message_placeholder.markdown(full_response)
 
-            except Exception as e:
-                error_msg = f"❌ **Error:** {str(e)}"
-                message_placeholder.markdown(error_msg)
-                full_response = error_msg
+                        if show_raw and auto_format:
+                            with st.expander("View raw response"):
+                                st.text(full_response)
 
-        # Add response to chat history
-        st.session_state.messages.append(
-            {"role": "assistant", "content": full_response, "avatar": AI_AVATAR}
-        )
+                except Exception as e:
+                    error_msg = f"❌ **Error:** {str(e)}"
+                    message_placeholder.markdown(error_msg)
+                    full_response = error_msg
+
+            # Add response to chat history
+            st.session_state.messages.append(
+                {"role": "assistant", "content": full_response, "avatar": AI_AVATAR}
+            )
+            
+        except Exception as e:
+            st.error(f"❌ Error uploading files: {str(e)}")
 
     # Chat input
     if prompt := st.chat_input("Type your message here..."):
