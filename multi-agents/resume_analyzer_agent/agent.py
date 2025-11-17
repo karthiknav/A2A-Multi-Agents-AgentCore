@@ -1,6 +1,8 @@
+import asyncio
 import json
 import logging
 import os
+import time
 from typing import Dict, Any
 import boto3
 from bedrock_agentcore import BedrockAgentCoreApp
@@ -27,47 +29,82 @@ DOCUMENTS_BUCKET = os.environ.get('DOCUMENTS_BUCKET', 'hr-agents-documents-agent
 app = BedrockAgentCoreApp()
 
 @app.entrypoint
-def invoke(payload):
+async def invoke(payload):
     """AgentCore entrypoint for HR resume evaluation"""
     try:
-        logger.info(f"🤖 AgentCore HR Agent - Processing payload: {payload}")
+        logger.info(f"🚀 Starting HR Agent invocation")
+        logger.info(f"📥 Received payload: {json.dumps(payload, indent=2)}")
         
         # Extract parameters from payload
         bucket = payload.get('bucket', DOCUMENTS_BUCKET)
         resume_key = payload.get('resume_key')
         job_description_key = payload.get('job_description_key')
         
+        logger.info(f"📂 Using bucket: {bucket}")
+        logger.info(f"📄 Resume key: {resume_key}")
+        logger.info(f"📋 Job description key: {job_description_key}")
+        
         if not resume_key:
+            logger.error("❌ Missing resume_key in payload")
             raise ValueError("resume_key is required in payload")
         
-        # Process the resume using Strands multi-agent system
-        result = process_resume_with_strands_agents(bucket, resume_key, job_description_key)
+        logger.info("🔄 Starting resume processing with Strands agents")
         
-        return {
-            "status": "success",
-            "candidate_name": result.get('name'),
-            "message": "Resume evaluation completed successfully"
-        }
+        # Process the resume using Strands multi-agent system
+        agent_stream = await process_resume_with_strands_agents(bucket, resume_key, job_description_key)
+        tool_name = None
+        event_count = 0
+        
+        try:
+            async for event in agent_stream:
+                event_count += 1
+                logger.debug(f"📊 Processing event #{event_count}: {type(event)}")
+
+                if (
+                    "current_tool_use" in event
+                    and event["current_tool_use"].get("name") != tool_name
+                ):
+                    tool_name = event["current_tool_use"]["name"]
+                    logger.info(f"🔧 Agent using tool: {tool_name}")
+                    yield f"\n\n🔧 Using tool: {tool_name}\n\n"
+
+                if "data" in event:
+                    tool_name = None
+                    data_length = len(str(event["data"]))
+                    logger.debug(f"📤 Yielding data chunk of {data_length} characters")
+                    yield event["data"]
+                    
+        except Exception as e:
+            logger.error(f"❌ Error in agent stream processing: {str(e)}")
+            yield f"Error: {str(e)}"
+            
+        logger.info(f"✅ Completed processing {event_count} events")
         
     except Exception as e:
-        logger.error(f"❌ Error in AgentCore HR processing: {str(e)}")
-        return {
-            "status": "error",
-            "error": str(e),
-            "message": "Resume evaluation failed"
-        }
+        logger.error(f"❌ Error in agent stream processing: {str(e)}")
+        yield f"Error: {str(e)}"
 
-def process_resume_with_strands_agents(bucket: str, resume_key: str, job_description_key: str) -> Dict[str, Any]:
+async def process_resume_with_strands_agents(bucket: str, resume_key: str, job_description_key: str) -> Dict[str, Any]:
     """Process resume using Strands multi-agent collaboration"""
     try:
+        logger.info(f"📥 Downloading resume from s3://{bucket}/{resume_key}")
         # Download resume content from S3
         resume_content = download_s3_file(bucket, resume_key)
+        logger.info(f"✅ Resume downloaded, length: {len(resume_content)} characters")
         
         # Download job description content from S3
-        job_content = download_s3_file(bucket, job_description_key) if job_description_key else "No specific job description provided."
+        if job_description_key:
+            logger.info(f"📥 Downloading job description from s3://{bucket}/{job_description_key}")
+            job_content = download_s3_file(bucket, job_description_key)
+            logger.info(f"✅ Job description downloaded, length: {len(job_content)} characters")
+        else:
+            logger.info("ℹ️ No job description provided, using default")
+            job_content = "No specific job description provided."
         
+        logger.info("🤖 Creating HR Supervisor agent")
         # Create the HR Supervisor agent
         supervisor_agent = create_supervisor_agent()
+        logger.info("✅ HR Supervisor agent created successfully")
         
         # Create evaluation request
         evaluation_request = f"""
@@ -86,21 +123,19 @@ def process_resume_with_strands_agents(bucket: str, resume_key: str, job_descrip
         4. GapIdentifierAgent to identify missing qualifications
         5. CandidateRaterAgent to provide numerical rating
 
-        Provide your final response as a comprehensive JSON structure.
+        Provide your final response as a comprehensive markdown format.
         """
         
         # Execute evaluation
-        logger.info("🤖 Starting AgentCore multi-agent evaluation...")
-        evaluation_result = supervisor_agent(evaluation_request)
-        logger.info("✅ AgentCore multi-agent evaluation completed")
-        
-        # Parse and structure the result
-        structured_result = parse_evaluation_result(evaluation_result, resume_key, resume_content)
-        
-        return structured_result
+        logger.info("🚀 Starting AgentCore multi-agent evaluation...")
+        logger.info(f"📝 Evaluation request length: {len(evaluation_request)} characters")
+        agent_stream = supervisor_agent.stream_async(evaluation_request)
+        logger.info("✅ Agent stream initialized successfully")
+        return agent_stream
         
     except Exception as e:
-        logger.error(f"❌ Error in AgentCore processing: {str(e)}")
+        logger.error(f"❌ Error in resume processing: {str(e)}")
+        logger.error(f"🔍 Error details: {type(e).__name__}")
         raise
 
 def create_supervisor_agent():
@@ -228,43 +263,54 @@ Coordinate with your specialized team to provide comprehensive candidate evaluat
 4. Have GapIdentifierAgent identify missing qualifications
 5. Have CandidateRaterAgent provide numerical rating (1-5 scale)
 
-CRITICAL: Output your final in this Markdown template with the candidate's data:
+CRITICAL: Output your final evaluation in this EXACT Markdown format:
 
-{
-  "resume_parsing": {
-    "analysis": "Detailed analysis",
-    "personal_info": {"name": "Full Name", "email": "email", "phone": "phone", "location": "location"},
-    "experience": [{"title": "Job Title", "company": "Company", "duration": "2020-2023", "achievements": []}],
-    "education": [{"degree": "Degree", "institution": "University", "year": "2019"}],
-    "skills": {"technical": [], "soft": []}
-  },
-  "job_analysis": {
-    "analysis": "Detailed job analysis",
-    "required_skills": [],
-    "preferred_skills": [],
-    "experience_level": "5+ years",
-    "education_requirements": "Bachelor's degree"
-  },
-  "resume_evaluation": {
-    "analysis": "Detailed evaluation",
-    "skills_match_percentage": 85,
-    "experience_relevance": "Highly relevant",
-    "education_alignment": "Exceeds requirements"
-  },
-  "gap_analysis": {
-    "analysis": "Detailed gap analysis",
-    "missing_skills": [],
-    "experience_gaps": [],
-    "development_areas": []
-  },
-  "candidate_rating": {
-    "rating": 4,
-    "justification": "Detailed justification",
-    "strengths": [],
-    "weaknesses": []
-  }
-}"""
-    )
+### Candidate Fit Summary
+
+| Suitability | Decision | Seniority | Match Summary | Red Flags | Availability |
+|---:|:--:|:--:|:--|:--|:--|
+| **{score}%** | **{decision}** | **{seniority}** | Core: **{coreMatch}** • Domain: **{domainMatch}** • Soft: **{softMatch}** | {redFlagsOrDash} | {availability} |
+
+> _Why this score:_ {oneLineRationale}
+
+---
+
+#### Must‑Haves
+| Must‑Have | Status | Evidence |
+|---|:--:|---|
+{mustHaveRows}
+
+---
+
+#### Core Skills (Top 6)
+| Skill | JD Priority | Candidate Level | Evidence |
+|---|:--:|:--:|---|
+{coreSkillRows}
+
+---
+
+#### Domain / Functional (Top 4)
+| Domain Skill | JD Priority | Candidate Level | Evidence |
+|---|:--:|:--:|---|
+{domainSkillRows}
+
+---
+
+#### Evidence Snippets
+- {evidence1}
+- {evidence2}
+- {evidence3}
+- {evidence4}
+
+---
+
+#### Gaps & Risks
+- {gap1}
+- {gap2}
+- {risk1}
+
+**Recommendation:** {oneLineRecommendation}
+""")
     
     return supervisor_agent
 
@@ -640,6 +686,9 @@ if __name__ == "__main__":
     # }
     
     # print("Testing resume analyzer with S3 files...")
-    # response = invoke(test_payload)
+    # response = asyncio.run(invoke(test_payload))
+
+
     # print(json.dumps(response, indent=2))
     app.run()
+

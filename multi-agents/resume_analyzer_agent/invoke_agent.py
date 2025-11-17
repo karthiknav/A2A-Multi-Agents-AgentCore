@@ -1,7 +1,7 @@
 import boto3
 import json
 
-agent_arn = "arn:aws:bedrock-agentcore:us-east-1:206409480438:runtime/agent-Jh18fkDHpR"
+agent_arn = "arn:aws:bedrock-agentcore:us-east-1:206409480438:runtime/agent-fqNLYLGAR4"
 agentcore_client = boto3.client(
     'bedrock-agentcore',
     region_name="us-east-1"
