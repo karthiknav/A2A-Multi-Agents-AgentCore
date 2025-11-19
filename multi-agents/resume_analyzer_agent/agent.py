@@ -10,7 +10,21 @@ from strands import Agent, tool
 import PyPDF2
 from docx import Document
 from pathlib import Path
-import argparse
+from strands.hooks import AgentInitializedEvent, HookProvider, HookRegistry, MessageAddedEvent
+
+# Import memory management modules
+from bedrock_agentcore_starter_toolkit.operations.memory.manager import MemoryManager
+from bedrock_agentcore.memory.constants import ConversationalMessage, MessageRole
+from bedrock_agentcore.memory.session import MemorySession, MemorySessionManager
+
+# Define message role constants
+USER = MessageRole.USER
+ASSISTANT = MessageRole.ASSISTANT
+
+# Configuration
+REGION = os.getenv('AWS_REGION', 'us-east-1') # AWS region for the agent
+ACTOR_ID = "user_123" # It can be any unique identifier (AgentID, User ID, etc.)
+SESSION_ID = "personal_session_001" # Unique session identifier
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,15 +32,150 @@ logger = logging.getLogger(__name__)
 
 # Initialize AWS clients
 s3_client = boto3.client('s3')
-dynamodb = boto3.resource('dynamodb')
 
 # Environment variables
 MODEL_ID = os.environ.get('MODEL_ID', 'us.anthropic.claude-3-5-sonnet-20241022-v2:0')
-CANDIDATES_TABLE = os.environ.get('CANDIDATES_TABLE', 'hr-agents-candidates-agentcore')
 DOCUMENTS_BUCKET = os.environ.get('DOCUMENTS_BUCKET', 'hr-agents-documents-agentcore')
-
 # Initialize AgentCore app
 app = BedrockAgentCoreApp()
+
+# Initialize Memory Manager 
+memory_manager = MemoryManager(region_name=REGION)
+memory_name = "ResumeAnalyzerMemoryManager"
+
+logger.info(f"✅ MemoryManager initialized for region: {REGION}")
+logger.info(f"Memory manager type: {type(memory_manager)}")
+
+# Create memory resource using MemoryManager
+logger.info(f"Creating memory '{memory_name}' for short-term conversational storage...")
+
+try:
+    memory = memory_manager.get_or_create_memory(
+        name=memory_name,
+        strategies=[],  # No strategies for short-term memory
+        description="Short-term memory for resume analyzer",
+        event_expiry_days=7,  # Retention period for short-term memory
+        memory_execution_role_arn=None,  # Optional for short-term memory
+    )
+    memory_id = memory.id
+    logger.info(f"✅ Successfully created/retrieved memory with MemoryManager:")
+    logger.info(f"   Memory ID: {memory_id}")
+    logger.info(f"   Memory Name: {memory.name}")
+    logger.info(f"   Memory Status: {memory.status}")
+    
+except Exception as e:
+    # Handle any errors during memory creation with enhanced error reporting
+    logger.error(f"❌ Memory creation failed: {e}")
+    logger.error(f"Error type: {type(e).__name__}")
+    import traceback
+    traceback.print_exc()
+    
+    # Cleanup on error - delete the memory if it was partially created
+    if 'memory_id' in locals():
+        try:
+            logger.info(f"Attempting cleanup of partially created memory: {memory_id}")
+            memory_manager.delete_memory(memory_id)
+            logger.info(f"✅ Successfully cleaned up memory: {memory_id}")
+        except Exception as cleanup_error:
+            logger.error(f"❌ Failed to clean up memory: {cleanup_error}")
+    
+    # Re-raise the original exception
+    raise
+
+# Initialize the session memory manager
+session_manager = MemorySessionManager(memory_id=memory.id, region_name=REGION)
+
+# Create a memory session for the specific actor/session combination
+user_session = session_manager.create_memory_session(
+    actor_id=ACTOR_ID, 
+    session_id=SESSION_ID
+)
+
+logger.info(f"✅ Session manager initialized for memory: {memory.id}")
+logger.info(f"✅ Memory session created for actor: {ACTOR_ID}, session: {SESSION_ID}")
+logger.info(f"Session manager type: {type(session_manager)}")
+logger.info(f"Memory session type: {type(user_session)}")
+
+class MemoryHookProvider(HookProvider):
+    def __init__(self, memory_session: MemorySession):  # Accept MemorySession instead
+        self.memory_session = memory_session
+    
+    def on_agent_initialized(self, event: AgentInitializedEvent):
+        """Load recent conversation history when agent starts using MemorySession"""
+        try:
+            # Use the pre-configured memory session (no need for actor_id/session_id)
+            recent_turns = self.memory_session.get_last_k_turns(k=5)
+            
+            if recent_turns:
+                # Format conversation history for context
+                context_messages = []
+                for turn in recent_turns:
+                    for message in turn:
+                        # Handle both EventMessage objects and dict formats
+                        if hasattr(message, 'role') and hasattr(message, 'content'):
+                            role = message['role']
+                            content = message['content']
+                        else:
+                            role = message.get('role', 'unknown')
+                            content = message.get('content', {}).get('text', '')
+                        context_messages.append(f"{role}: {content}")
+                
+                context = "\n".join(context_messages)
+                # Add context to agent's system prompt
+                event.agent.system_prompt += f"\n\nRecent conversation:\n{context}"
+                logger.info(f"✅ Loaded {len(recent_turns)} conversation turns using MemorySession")
+                
+        except Exception as e:
+            logger.error(f"Memory load error: {e}")
+
+    def on_message_added(self, event: MessageAddedEvent):
+        """Store messages in memory using MemorySession"""
+        messages = event.agent.messages
+        try:
+            if messages and len(messages) > 0 and messages[-1]["content"][0].get("text"):
+                message_text = messages[-1]["content"][0]["text"]
+                message_role = MessageRole.USER if messages[-1]["role"] == "user" else MessageRole.ASSISTANT
+                
+                # Use memory session instance (no need to pass actor_id/session_id)
+                result = self.memory_session.add_turns(
+                    messages=[ConversationalMessage(message_text, message_role)]
+                )
+                
+                event_id = result['eventId']
+                logger.info(f"✅ Stored message with Event ID: {event_id}, Role: {message_role.value}")
+                
+        except Exception as e:
+            logger.error(f"Memory save error: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
+    
+    def register_hooks(self, registry: HookRegistry):
+        # Register memory hooks
+        registry.add_callback(MessageAddedEvent, self.on_message_added)
+        registry.add_callback(AgentInitializedEvent, self.on_agent_initialized)
+        logger.info("✅ Memory hooks registered with MemorySession")
+
+async def process_query_with_strands_agents(query: str):
+    """Process plain text queries using Strands agents with memory context"""
+    try:
+        # Initialize memory hook provider
+        memory_hook_provider = MemoryHookProvider(user_session)
+        
+        # Create agent with memory hooks
+        agent = Agent(
+            model=MODEL_ID,
+            system_prompt="""You are an expert HR resume analyzer. You have access to previous conversations 
+            and can answer follow-up questions about resumes, job matches, and HR-related topics. 
+            Use the conversation context to provide relevant and helpful responses.""",
+            hooks=[memory_hook_provider]
+        )
+        
+        # Stream the agent's response to the query
+        return agent.stream(query)
+        
+    except Exception as e:
+        logger.error(f"❌ Error in query processing: {str(e)}")
+        raise
 
 @app.entrypoint
 async def invoke(payload):
@@ -35,23 +184,28 @@ async def invoke(payload):
         logger.info(f"🚀 Starting HR Agent invocation")
         logger.info(f"📥 Received payload: {json.dumps(payload, indent=2)}")
         
-        # Extract parameters from payload
-        bucket = payload.get('bucket', DOCUMENTS_BUCKET)
-        resume_key = payload.get('resume_key')
-        job_description_key = payload.get('job_description_key')
-        
-        logger.info(f"📂 Using bucket: {bucket}")
-        logger.info(f"📄 Resume key: {resume_key}")
-        logger.info(f"📋 Job description key: {job_description_key}")
-        
-        if not resume_key:
-            logger.error("❌ Missing resume_key in payload")
-            raise ValueError("resume_key is required in payload")
-        
-        logger.info("🔄 Starting resume processing with Strands agents")
-        
-        # Process the resume using Strands multi-agent system
-        agent_stream = await process_resume_with_strands_agents(bucket, resume_key, job_description_key)
+        # Check if this is a plain text query (follow-up question) or S3 document processing
+        if 'query' in payload or 'message' in payload:
+            # Handle plain text queries/follow-up questions
+            query = payload.get('query') or payload.get('message', '')
+            logger.info(f"💬 Processing follow-up query: {query}")
+            agent_stream = await process_query_with_strands_agents(query)
+        else:
+            # Handle S3 document processing (original logic)
+            bucket = payload.get('bucket', DOCUMENTS_BUCKET)
+            resume_key = payload.get('resume_key')
+            job_description_key = payload.get('job_description_key')
+            
+            logger.info(f"📂 Using bucket: {bucket}")
+            logger.info(f"📄 Resume key: {resume_key}")
+            logger.info(f"📋 Job description key: {job_description_key}")
+            
+            if not resume_key:
+                logger.error("❌ Missing resume_key in payload")
+                raise ValueError("resume_key is required in payload")
+            
+            logger.info("🔄 Starting resume processing with Strands agents")
+            agent_stream = await process_resume_with_strands_agents(bucket, resume_key, job_description_key)
         tool_name = None
         event_count = 0
         
@@ -624,6 +778,27 @@ def safe_parse_json(content: str) -> Dict[str, Any]:
         logger.error(f"JSON parsing error: {str(e)}")
         logger.debug(f"Content that failed to parse: {content[:500]}")
         return None
+async def process_query_with_strands_agents(query: str):
+    """Process plain text queries using Strands agents with memory context"""
+    try:
+        # Initialize memory hook provider
+        memory_hook_provider = MemoryHookProvider(user_session)
+        
+        # Create agent with memory hooks
+        agent = Agent(
+            model=MODEL_ID,
+            system_prompt="""You are an expert HR resume analyzer. You have access to previous conversations 
+            and can answer follow-up questions about resumes, job matches, and HR-related topics. 
+            Use the conversation context to provide relevant and helpful responses.""",
+            hooks=[memory_hook_provider]
+        )
+        
+        # Stream the agent's response to the query
+        return agent.stream_async(query)
+        
+    except Exception as e:
+        logger.error(f"❌ Error in query processing: {str(e)}")
+        raise
 
 def download_s3_file(bucket: str, key: str) -> str:
     """Download and read content from S3 file (supports txt, docx, pdf)"""
@@ -678,17 +853,28 @@ def extract_name_from_key(s3_key: str) -> str:
         return "Unknown Candidate"
 
 if __name__ == "__main__":
-    # Test with sample S3 payload
-    # test_payload = {
-    #     "bucket": "amzn-s3-resume-analyzer-bucket",
-    #     "resume_key": "john_smith_resume.txt",
-    #     "job_description_key": "job_description.txt"
-    # }
+    test_payload = {
+        "bucket": "amzn-s3-resume-analyzer-bucket",
+        "resume_key": "john_smith_resume.txt",
+        "job_description_key": "job_description.txt"
+    }
     
-    # print("Testing resume analyzer with S3 files...")
-    # response = asyncio.run(invoke(test_payload))
+    async def test():
+        response = ""
+        # async for chunk in invoke(test_payload):
+        #     response += str(chunk)
+        # print(response[:200])
 
+        query_payload = {
+            "query": "What is the candidate's overall score?"
+        }
+        async for chunk in invoke(query_payload):
+            response += str(chunk)
+        print(response[:200])
+    
+    asyncio.run(test())
+    # Continue test with memory
 
-    # print(json.dumps(response, indent=2))
-    app.run()
+    # app.run()
+
 
