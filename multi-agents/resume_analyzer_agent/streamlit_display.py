@@ -729,7 +729,7 @@ def main():
     st.subheader("📄 HR Resume Analysis")
     
     # Fixed S3 bucket
-    bucket_name = "amzn-s3-resume-analyzer-bucket"
+    bucket_name = "amzn-s3-resume-analyzer-bucket-agentcore-206409480438"
     
     # File upload section
     col1, col2 = st.columns(2)
