@@ -850,32 +850,32 @@ def extract_name_from_key(s3_key: str) -> str:
         return "Unknown Candidate"
 
 if __name__ == "__main__":
-    async def test():
-        # First call with document payload to create session
-        document_payload = {
-            "bucket": "amzn-s3-resume-analyzer-bucket-agentcore-206409480438",
-            "resume_key": "resumes/20251125_124020_john_smith_resume.txt",
-            "job_description_key": "jobs/20251125_132758_job_description.txt"
-        }
+    # async def test():
+    #     # First call with document payload to create session
+    #     document_payload = {
+    #         "bucket": "amzn-s3-resume-analyzer-bucket-agentcore-206409480438",
+    #         "resume_key": "resumes/20251125_124020_john_smith_resume.txt",
+    #         "job_description_key": "jobs/20251125_132758_job_description.txt"
+    #     }
         
-        print("=== First call: Processing documents ===")
-        response1 = ""
-        async for chunk in invoke(document_payload):
-            response1 += str(chunk)
-        print(f"Document processing result: {response1[:200]}...")
+    #     print("=== First call: Processing documents ===")
+    #     response1 = ""
+    #     async for chunk in invoke(document_payload):
+    #         response1 += str(chunk)
+    #     print(f"Document processing result: {response1[:200]}...")
         
-        # Second call with query only - should use existing session
-        query_payload = {
-            "query": "What is the candidate's overall score?"
-        }
+    #     # Second call with query only - should use existing session
+    #     query_payload = {
+    #         "query": "What is the candidate's overall score?"
+    #     }
         
-        print("\n=== Second call: Follow-up query ===")
-        response2 = ""
-        async for chunk in invoke(query_payload):
-            response2 += str(chunk)
-        print(f"Query result: {response2[:200]}...")
+    #     print("\n=== Second call: Follow-up query ===")
+    #     response2 = ""
+    #     async for chunk in invoke(query_payload):
+    #         response2 += str(chunk)
+    #     print(f"Query result: {response2[:200]}...")
     
-    asyncio.run(test())
-    # app.run()
+    # asyncio.run(test())
+    app.run()
 
 
