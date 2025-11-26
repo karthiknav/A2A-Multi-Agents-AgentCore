@@ -264,20 +264,27 @@ def invoke_hr_agent_streaming(
     runtime_session_id: str,
     region: str = "us-east-1",
     show_tool: bool = True,
+    prompt: str = None,
 ) -> Iterator[str]:
     """Invoke HR agent with proper payload structure"""
     if DEBUG_MODE:
         logger.debug(f"Invoking HR agent: {agent_arn}")
         logger.debug(f"Bucket: {bucket}, Resume: {resume_key}, Job: {job_description_key}")
+        logger.debug(f"Prompt: {prompt}")
     try:
         agentcore_client = boto3.client("bedrock-agentcore", region_name=region)
 
-        # Create HR-specific payload
-        payload = {
-            "bucket": bucket,
-            "resume_key": resume_key,
-            "job_description_key": job_description_key if job_description_key else None
-        }
+        # Create payload based on whether it's initial analysis or follow-up query
+        if prompt:
+            # For follow-up questions, use simple query payload
+            payload = {"query": prompt}
+        else:
+            # For initial analysis, use full file payload
+            payload = {
+                "bucket": bucket,
+                "resume_key": resume_key,
+                "job_description_key": job_description_key if job_description_key else None
+            }
         
         boto3_response = agentcore_client.invoke_agent_runtime(
             agentRuntimeArn=agent_arn,
@@ -716,168 +723,199 @@ def main():
         else:
             st.error("❌ Please select an agent")
 
-    # Initialize chat history
+    # Initialize session state
     if "messages" not in st.session_state:
         st.session_state.messages = []
+    if "analysis_active" not in st.session_state:
+        st.session_state.analysis_active = False
+    if "current_resume_key" not in st.session_state:
+        st.session_state.current_resume_key = None
+    if "current_job_key" not in st.session_state:
+        st.session_state.current_job_key = None
 
     # Display chat messages
     for message in st.session_state.messages:
         with st.chat_message(message["role"], avatar=message["avatar"]):
             st.markdown(message["content"])
 
-    # HR Agent specific inputs
-    st.subheader("📄 HR Resume Analysis")
-    
     # Fixed S3 bucket
     bucket_name = "amzn-s3-resume-analyzer-bucket-agentcore-206409480438"
     
-    # File upload section
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("**📎 Upload Resume**")
-        resume_file = st.file_uploader(
-            "Choose resume file",
-            type=['pdf', 'doc', 'docx', 'txt'],
-            help="Upload resume in PDF, DOC, DOCX, or TXT format"
-        )
+    # Show upload section only if no analysis is active
+    if not st.session_state.analysis_active:
+        st.subheader("📄 HR Resume Analysis")
         
-    with col2:
-        st.markdown("**📋 Job Description**")
-        job_input_method = st.radio(
-            "Choose input method:",
-            ["Upload file", "Type text"],
-            horizontal=True
-        )
+        # File upload section
+        col1, col2 = st.columns(2)
         
-        if job_input_method == "Upload file":
-            job_file = st.file_uploader(
-                "Choose job description file",
+        with col1:
+            st.markdown("**📎 Upload Resume**")
+            resume_file = st.file_uploader(
+                "Choose resume file",
                 type=['pdf', 'doc', 'docx', 'txt'],
-                help="Upload job description file"
+                help="Upload resume in PDF, DOC, DOCX, or TXT format"
             )
-            job_text = None
-        else:
-            job_file = None
-            job_text = st.text_area(
-                "Job Description",
-                height=200,
-                placeholder="Paste or type the job description here..."
-            )
-    
-    # Analysis button
-    can_analyze = agent_arn and resume_file and (job_file or job_text)
-    
-    if st.button("🔍 Analyze Resume", disabled=not can_analyze):
-        if not agent_arn:
-            st.error("Please select an agent in the sidebar first.")
-            return
-        if not resume_file:
-            st.error("Please upload a resume file.")
-            return
-        if not job_file and not job_text:
-            st.error("Please provide job description (upload file or type text).")
-            return
             
-        try:
-            with st.spinner("📤 Uploading files to S3..."):
-                s3_client = boto3.client('s3', region_name=region)
-                
-                # Upload resume
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                resume_key = f"resumes/{timestamp}_{resume_file.name}"
-                
-                s3_client.upload_fileobj(
-                    resume_file,
-                    bucket_name,
-                    resume_key
+        with col2:
+            st.markdown("**📋 Job Description**")
+            job_input_method = st.radio(
+                "Choose input method:",
+                ["Upload file", "Type text"],
+                horizontal=True
+            )
+            
+            if job_input_method == "Upload file":
+                job_file = st.file_uploader(
+                    "Choose job description file",
+                    type=['pdf', 'doc', 'docx', 'txt'],
+                    help="Upload job description file"
                 )
-                st.success(f"✅ Resume uploaded: {resume_key}")
+                job_text = None
+            else:
+                job_file = None
+                job_text = st.text_area(
+                    "Job Description",
+                    height=200,
+                    placeholder="Paste or type the job description here..."
+                )
+        
+        # Analysis button
+        can_analyze = agent_arn and resume_file and (job_file or job_text)
+        
+        if st.button("🔍 Analyze Resume", disabled=not can_analyze):
+            if not agent_arn:
+                st.error("Please select an agent in the sidebar first.")
+                return
+            if not resume_file:
+                st.error("Please upload a resume file.")
+                return
+            if not job_file and not job_text:
+                st.error("Please provide job description (upload file or type text).")
+                return
                 
-                # Handle job description
-                job_desc_key = None
-                if job_file:
-                    job_desc_key = f"jobs/{timestamp}_{job_file.name}"
+            try:
+                with st.spinner("📤 Uploading files to S3..."):
+                    s3_client = boto3.client('s3', region_name=region)
+                    
+                    # Upload resume
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    resume_key = f"resumes/{timestamp}_{resume_file.name}"
+                    
                     s3_client.upload_fileobj(
-                        job_file,
+                        resume_file,
                         bucket_name,
-                        job_desc_key
+                        resume_key
                     )
-                    st.success(f"✅ Job description uploaded: {job_desc_key}")
-                elif job_text:
-                    job_desc_key = f"jobs/{timestamp}_job_description.txt"
-                    s3_client.put_object(
-                        Bucket=bucket_name,
-                        Key=job_desc_key,
-                        Body=job_text.encode('utf-8'),
-                        ContentType='text/plain'
-                    )
-                    st.success(f"✅ Job description saved: {job_desc_key}")
-            
-            # Create analysis request
-            analysis_request = f"Analyzing resume: {resume_file.name}"
-            
-            # Add to chat history
-            st.session_state.messages.append(
-                {"role": "user", "content": analysis_request, "avatar": HUMAN_AVATAR}
-            )
-            
-            # Process the analysis
-            with st.chat_message("assistant", avatar=AI_AVATAR):
-                message_placeholder = st.empty()
-                chunk_buffer = ""
-
-                try:
-                    with st.spinner("🤖 Analyzing with multiple tools..."):
-                        # Get complete response from HR agent
-                        full_response = invoke_hr_agent_streaming(
+                    st.success(f"✅ Resume uploaded: {resume_key}")
+                    
+                    # Handle job description
+                    job_desc_key = None
+                    if job_file:
+                        job_desc_key = f"jobs/{timestamp}_{job_file.name}"
+                        s3_client.upload_fileobj(
+                            job_file,
                             bucket_name,
-                            resume_key,
-                            job_desc_key,
-                            agent_arn,
-                            st.session_state.runtime_session_id,
-                            region,
-                            show_tools,
+                            job_desc_key
                         )
-                        
-                        # Handle generator response
-                        if hasattr(full_response, '__iter__') and not isinstance(full_response, str):
-                            # It's a generator, collect all chunks
-                            chunks = []
-                            for chunk in full_response:
-                                if isinstance(chunk, str):
-                                    chunks.append(chunk)
-                                else:
-                                    chunks.append(str(chunk))
-                            full_response = ''.join(chunks)
-                            # Clean up quotes
-                            full_response = re.sub(r'^"', '', full_response)
-                            full_response = re.sub(r'"$', '', full_response)
-                            full_response = full_response.replace('""', '')
-                        elif not isinstance(full_response, str):
-                            full_response = str(full_response)
-                        
-                        if auto_format:
-                            full_response = clean_response_text(full_response, show_thinking)
+                        st.success(f"✅ Job description uploaded: {job_desc_key}")
+                    elif job_text:
+                        job_desc_key = f"jobs/{timestamp}_job_description.txt"
+                        s3_client.put_object(
+                            Bucket=bucket_name,
+                            Key=job_desc_key,
+                            Body=job_text.encode('utf-8'),
+                            ContentType='text/plain'
+                        )
+                        st.success(f"✅ Job description saved: {job_desc_key}")
+                
+                # Store keys in session state
+                st.session_state.current_resume_key = resume_key
+                st.session_state.current_job_key = job_desc_key
+                st.session_state.analysis_active = True
+                
+                # Create analysis request
+                analysis_request = f"Analyzing resume: {resume_file.name}"
+                
+                # Add to chat history
+                st.session_state.messages.append(
+                    {"role": "user", "content": analysis_request, "avatar": HUMAN_AVATAR}
+                )
+                
+                # Process the analysis
+                with st.chat_message("assistant", avatar=AI_AVATAR):
+                    message_placeholder = st.empty()
+                    chunk_buffer = ""
 
-                        message_placeholder.markdown(full_response)
+                    try:
+                        with st.spinner("🤖 Analyzing with multiple tools..."):
+                            # Get complete response from HR agent
+                            full_response = invoke_hr_agent_streaming(
+                                bucket_name,
+                                resume_key,
+                                job_desc_key,
+                                agent_arn,
+                                st.session_state.runtime_session_id,
+                                region,
+                                show_tools,
+                            )
+                            
+                            # Handle generator response
+                            if hasattr(full_response, '__iter__') and not isinstance(full_response, str):
+                                # It's a generator, collect all chunks
+                                chunks = []
+                                for chunk in full_response:
+                                    if isinstance(chunk, str):
+                                        chunks.append(chunk)
+                                    else:
+                                        chunks.append(str(chunk))
+                                full_response = ''.join(chunks)
+                                # Clean up quotes
+                                full_response = re.sub(r'^"', '', full_response)
+                                full_response = re.sub(r'"$', '', full_response)
+                                full_response = full_response.replace('""', '')
+                            elif not isinstance(full_response, str):
+                                full_response = str(full_response)
+                            
+                            if auto_format:
+                                full_response = clean_response_text(full_response, show_thinking)
 
-                        if show_raw and auto_format:
-                            with st.expander("View raw response"):
-                                st.text(full_response)
+                            message_placeholder.markdown(full_response)
 
-                except Exception as e:
-                    error_msg = f"❌ **Error:** {str(e)}"
-                    message_placeholder.markdown(error_msg)
-                    full_response = error_msg
+                            if show_raw and auto_format:
+                                with st.expander("View raw response"):
+                                    st.text(full_response)
 
-            # Add response to chat history
-            st.session_state.messages.append(
-                {"role": "assistant", "content": full_response, "avatar": AI_AVATAR}
-            )
-            
-        except Exception as e:
-            st.error(f"❌ Error uploading files: {str(e)}")
+                    except Exception as e:
+                        error_msg = f"❌ **Error:** {str(e)}"
+                        message_placeholder.markdown(error_msg)
+                        full_response = error_msg
+
+                # Add response to chat history
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": full_response, "avatar": AI_AVATAR}
+                )
+                
+                st.rerun()
+                
+            except Exception as e:
+                st.error(f"❌ Error uploading files: {str(e)}")
+    
+    else:
+        # Analysis is active - show current analysis info and new analysis button
+        st.subheader("📄 Resume Analysis Active")
+        col1, col2 = st.columns([3, 1])
+        
+        with col1:
+            st.info(f"📄 Current Resume: {st.session_state.current_resume_key.split('/')[-1] if st.session_state.current_resume_key else 'Unknown'}")
+            st.info(f"📋 Job Description: {st.session_state.current_job_key.split('/')[-1] if st.session_state.current_job_key else 'Unknown'}")
+        
+        with col2:
+            if st.button("🔄 New Analysis", help="Start a new resume analysis"):
+                st.session_state.analysis_active = False
+                st.session_state.current_resume_key = None
+                st.session_state.current_job_key = None
+                st.session_state.messages = []
+                st.rerun()
 
     # Chat input
     if prompt := st.chat_input("Type your message here..."):
@@ -898,47 +936,94 @@ def main():
             chunk_buffer = ""
 
             try:
-                # Stream the response
-                for chunk in invoke_agent_streaming(
-                    prompt,
-                    agent_arn,
-                    st.session_state.runtime_session_id,
-                    region,
-                    show_tools,
-                ):
-                    if DEBUG_MODE and chunk.strip():
-                        pdb.set_trace()  # Debug each response chunk
-                    # Let's see what we get
-                    logger.debug(f"MAIN LOOP: chunk type: {type(chunk)}")
-                    logger.debug(f"MAIN LOOP: chunk content: {chunk}")
-
-                    # Ensure chunk is a string before concatenating
-                    if not isinstance(chunk, str):
-                        logger.debug(
-                            f"MAIN LOOP: Converting non-string chunk to string"
-                        )
-                        chunk = str(chunk)
-
-                    # Add chunk to buffer
-                    chunk_buffer += chunk
-
-                    # Only update display every few chunks or when we hit certain characters
-                    if (
-                        len(chunk_buffer) % 3 == 0
-                        or chunk.endswith(" ")
-                        or chunk.endswith("\n")
+                # Check if we have an active analysis for follow-up questions
+                if st.session_state.analysis_active:
+                    # Use HR agent with query payload for follow-up questions
+                    for chunk in invoke_hr_agent_streaming(
+                        None,  # bucket not needed for query
+                        None,  # resume_key not needed for query
+                        None,  # job_key not needed for query
+                        agent_arn,
+                        st.session_state.runtime_session_id,
+                        region,
+                        show_tools,
+                        prompt,
                     ):
-                        if auto_format:
-                            # Clean the accumulated response
-                            cleaned_response = clean_response_text(
-                                chunk_buffer, show_thinking
-                            )
-                            message_placeholder.markdown(cleaned_response + " ▌")
-                        else:
-                            # Show raw response
-                            message_placeholder.markdown(chunk_buffer + " ▌")
+                        if DEBUG_MODE and chunk.strip():
+                            pdb.set_trace()  # Debug each response chunk
+                        
+                        logger.debug(f"MAIN LOOP: chunk type: {type(chunk)}")
+                        logger.debug(f"MAIN LOOP: chunk content: {chunk}")
 
-                    time.sleep(0.01)  # Reduced delay since we're batching updates
+                        # Ensure chunk is a string before concatenating
+                        if not isinstance(chunk, str):
+                            logger.debug(
+                                f"MAIN LOOP: Converting non-string chunk to string"
+                            )
+                            chunk = str(chunk)
+
+                        # Add chunk to buffer
+                        chunk_buffer += chunk
+
+                        # Only update display every few chunks or when we hit certain characters
+                        if (
+                            len(chunk_buffer) % 3 == 0
+                            or chunk.endswith(" ")
+                            or chunk.endswith("\n")
+                        ):
+                            if auto_format:
+                                # Clean the accumulated response
+                                cleaned_response = clean_response_text(
+                                    chunk_buffer, show_thinking
+                                )
+                                message_placeholder.markdown(cleaned_response + " ▌")
+                            else:
+                                # Show raw response
+                                message_placeholder.markdown(chunk_buffer + " ▌")
+
+                        time.sleep(0.01)  # Reduced delay since we're batching updates
+                else:
+                    # Use regular agent streaming for general questions
+                    for chunk in invoke_agent_streaming(
+                        prompt,
+                        agent_arn,
+                        st.session_state.runtime_session_id,
+                        region,
+                        show_tools,
+                    ):
+                        if DEBUG_MODE and chunk.strip():
+                            pdb.set_trace()  # Debug each response chunk
+                        
+                        logger.debug(f"MAIN LOOP: chunk type: {type(chunk)}")
+                        logger.debug(f"MAIN LOOP: chunk content: {chunk}")
+
+                        # Ensure chunk is a string before concatenating
+                        if not isinstance(chunk, str):
+                            logger.debug(
+                                f"MAIN LOOP: Converting non-string chunk to string"
+                            )
+                            chunk = str(chunk)
+
+                        # Add chunk to buffer
+                        chunk_buffer += chunk
+
+                        # Only update display every few chunks or when we hit certain characters
+                        if (
+                            len(chunk_buffer) % 3 == 0
+                            or chunk.endswith(" ")
+                            or chunk.endswith("\n")
+                        ):
+                            if auto_format:
+                                # Clean the accumulated response
+                                cleaned_response = clean_response_text(
+                                    chunk_buffer, show_thinking
+                                )
+                                message_placeholder.markdown(cleaned_response + " ▌")
+                            else:
+                                # Show raw response
+                                message_placeholder.markdown(chunk_buffer + " ▌")
+
+                        time.sleep(0.01)  # Reduced delay since we're batching updates
 
                 # Final response without cursor
                 if auto_format:
